@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import csv
 import os.path
+from matplotlib import animation
 
 path1 = "build_release/out/biceps"
 path2 = "build_release/out"
@@ -111,17 +112,67 @@ n_points_xy = jumps[0] + 1
 n_points_z = (int)(n_points / n_points_xy)
 
 # plot electrode positions for debugging
-if False:
-  from mpl_toolkits.mplot3d import Axes3D
-  fig = plt.figure()
-  ax = fig.add_subplot(111, projection='3d')
+# visualize and export electrode positions
+if True:
+    from mpl_toolkits.mplot3d import Axes3D
+    import numpy as np
+    import matplotlib.pyplot as plt
 
-  xpos = [electrode_positions[i][0] for i in range(n_points)]
-  ypos = [electrode_positions[i][1] for i in range(n_points)]
-  zpos = [electrode_positions[i][2] for i in range(n_points)]
-  colors = [(i/n_points,i/n_points,i/n_points) for i in range(n_points)]
-  ax.scatter(xpos,ypos,zpos,c=colors)
-  plt.show()
+    # Make sure n_points matches electrode_positions
+    n_points = len(electrode_positions)
+
+    xpos = [electrode_positions[i][0] for i in range(n_points)]
+    ypos = [electrode_positions[i][1] for i in range(n_points)]
+    zpos = [electrode_positions[i][2] for i in range(n_points)]
+
+    # -------------------------------------------------------------------------
+    # Write electrode positions to legacy VTK file for ParaView
+    # -------------------------------------------------------------------------
+    vtk_filename = "electrode_positions.vtk"
+
+    with open(vtk_filename, "w") as f:
+        f.write("# vtk DataFile Version 3.0\n")
+        f.write("Electrode positions from opendihu\n")
+        f.write("ASCII\n")
+        f.write("DATASET POLYDATA\n")
+
+        # Write points
+        f.write(f"POINTS {n_points} float\n")
+        for i in range(n_points):
+            x, y, z = electrode_positions[i]
+            f.write(f"{x} {y} {z}\n")
+
+        # Write vertices so ParaView displays them as points
+        f.write(f"\nVERTICES {n_points} {2 * n_points}\n")
+        for i in range(n_points):
+            f.write(f"1 {i}\n")
+
+        # Add electrode id as scalar data
+        f.write(f"\nPOINT_DATA {n_points}\n")
+        f.write("SCALARS electrode_id int 1\n")
+        f.write("LOOKUP_TABLE default\n")
+        for i in range(n_points):
+            f.write(f"{i}\n")
+
+    print(f'Wrote "{vtk_filename}" for ParaView visualization.')
+
+    # -------------------------------------------------------------------------
+    # Optional matplotlib preview
+    # -------------------------------------------------------------------------
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+
+    colors = [(i / max(n_points - 1, 1), i / max(n_points - 1, 1), i / max(n_points - 1, 1))
+              for i in range(n_points)]
+
+    ax.scatter(xpos, ypos, zpos, c=colors)
+
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
+    ax.set_title("Electrode positions")
+
+    plt.show()
 
 # compute average interelectrode distances
 # across muscle (xy)
@@ -202,6 +253,105 @@ plt.draw()
 plt.pause(5)
 plt.ioff()
 
+# -------------------------------------------------------------------------
+# Animated EMG plot
+# -------------------------------------------------------------------------
+
+t_array = np.asarray(t_list)
+emg_array = np.asarray(emg_data)
+
+n_time_steps = emg_array.shape[0]
+n_channels = emg_array.shape[1]
+n_subplots = n_plots_x * n_plots_y
+n_visible_channels = min(n_channels, n_subplots)
+
+# Animation settings
+fps = 30
+target_animation_seconds = 20
+n_animation_frames = fps * target_animation_seconds
+
+# Downsample frames if the EMG signal is long
+frame_step = max(1, n_time_steps // n_animation_frames)
+frame_indices = np.arange(1, n_time_steps, frame_step)
+
+# Use a moving time window to emulate real-time EMG display
+use_moving_window = False
+window_seconds = 0.5   # adjust this, e.g. 0.2, 0.5, 1.0
+
+fig_anim = plt.figure(figsize=fig.get_size_inches())
+
+axes = []
+lines = []
+
+for j in range(n_plots_y):
+    for i in range(n_plots_x):
+        index = j * n_plots_x + i
+
+        ax = fig_anim.add_subplot(n_plots_y, n_plots_x, index + 1)
+
+        if index < n_visible_channels:
+            line, = ax.plot([], [], linewidth=0.8)
+            lines.append(line)
+        else:
+            line = None
+
+        ax.set_ylim(minimum_value, maximum_value)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.axis("off")
+
+        axes.append(ax)
+
+fig_anim.subplots_adjust(hspace=0, wspace=0)
+
+
+def init():
+    for line in lines:
+        line.set_data([], [])
+    return lines
+
+
+def update(frame_id):
+    end_idx = frame_indices[frame_id]
+    current_time = t_array[end_idx]
+
+    if use_moving_window:
+        start_time = current_time - window_seconds
+        start_idx = np.searchsorted(t_array, start_time)
+
+        x_data = t_array[start_idx:end_idx]
+        for ch in range(n_visible_channels):
+            y_data = emg_array[start_idx:end_idx, ch]
+            lines[ch].set_data(x_data, y_data)
+            axes[ch].set_xlim(max(t_array[0], start_time), current_time)
+
+    else:
+        x_data = t_array[:end_idx]
+        for ch in range(n_visible_channels):
+            y_data = emg_array[:end_idx, ch]
+            lines[ch].set_data(x_data, y_data)
+            axes[ch].set_xlim(t_array[0], t_array[-1])
+
+    return lines
+
+
+anim = animation.FuncAnimation(
+    fig_anim,
+    update,
+    frames=len(frame_indices),
+    init_func=init,
+    interval=1000 / fps,
+    blit=True
+)
+
+try:
+    anim.save("emg_animation.mp4", writer="ffmpeg", fps=fps, dpi=150)
+    print('Created file "emg_animation.mp4".')
+
+except Exception:
+    print("Failed to save EMG animation.")
+    traceback.print_exc()
+
 # -------------------------
 # load stimulation times
 fiber_times = {}
@@ -241,7 +391,6 @@ except:
 
 # ------------------
 # create animation
-from matplotlib import animation
 from matplotlib import gridspec
 
 fig = plt.figure(figsize=(8,10))
@@ -345,11 +494,17 @@ print("Saving animation with {} frames from {} data points, animation length {} 
 
 plt.tight_layout()
 
+import traceback
+
 try:
-  anim.save("anim.mp4")
-  print("Saved \"anim.mp4\".")
-except:
-  print("An error occured during the animation.")
+    anim.save("anim.mp4")
+    print('Saved "anim.mp4".')
+except Exception as e:
+    print("An error occurred during the animation.")
+    print(f"Error type: {type(e).__name__}")
+    print(f"Error message: {e}")
+    print("Full traceback:")
+    traceback.print_exc()
 
 plt.show()
 
