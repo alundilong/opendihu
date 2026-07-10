@@ -57,3 +57,5 @@ dependencies
 *.vtk
 *.mp4
 *.pvsm
+*.gif
+*.pdf
