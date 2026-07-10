@@ -53,3 +53,7 @@ dependencies
 **/old*
 /doc/doxygen/html
 /doc/doxygen/latex
+*.png
+*.vtk
+*.mp4
+*.pvsm
