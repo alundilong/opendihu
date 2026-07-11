@@ -8,7 +8,7 @@ Conductivity = 3.828      # [mS/cm] sigma, conductivity
 
 generated_input_directory = os.environ.get(
     "OPENDIHU_GENERATED_MU_DIR",
-    r"/home/ymaom/workspace/opendihu/examples/electrophysiology/input/opendihu_distribution_generator_v2_case_package/aging_type2_emg/death_75"
+    r"/home/ymaom/workspace/opendihu/examples/electrophysiology/input/opendihu_distribution_generator_v2_case_package/opendihu_mu_case_package_fixed/death_75"
 )
 
 firing_times_file = os.path.join(generated_input_directory, "MU_firing_times_always.txt")

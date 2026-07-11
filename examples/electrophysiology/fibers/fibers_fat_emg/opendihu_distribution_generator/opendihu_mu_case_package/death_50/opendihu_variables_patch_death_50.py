@@ -1,22 +1,14 @@
-
-# -------------------------------------------------------------------------
-# Patch for OpenDiHu variables.py.
-# Remove/comment the original motor_units loop and use this block.
-# -------------------------------------------------------------------------
-
+# Patch for OpenDiHu variables.py. Remove/comment the original motor_units loop.
 import json
 import os
 
-scenario_name = "death_50_protocol_B"
+scenario_name = "death_50"
 
-# Keep these definitions if your original variables.py needs them.
 Conductivity = 3.828      # [mS/cm] sigma, conductivity
-Am = 500.0                # [cm^-1]
-Cm = 0.58                 # [uF/cm^2]
 
 generated_input_directory = os.environ.get(
     "OPENDIHU_GENERATED_MU_DIR",
-    r"/home/ymaom/workspace/opendihu/examples/electrophysiology/input/opendihu_distribution_generator_v2_case_package/protocol_B_compensated_drive/death_50"
+    r"/home/ymaom/workspace/opendihu/examples/electrophysiology/fibers/fibers_fat_emg/opendihu_distribution_generator/opendihu_mu_case_package/death_50"
 )
 
 firing_times_file = os.path.join(generated_input_directory, "MU_firing_times_always.txt")
@@ -29,8 +21,8 @@ with open(motor_units_file, "r") as f:
 motor_units = motor_units_payload["motor_units"]
 n_motor_units = len(motor_units)
 
-# The OpenDiHu callback usually receives mu_no as 0-based.
-# If your callback receives 1..20, set:
+# The OpenDiHu example usually passes mu_no as a 0-based index to callbacks.
+# Keep default 0. If your callback receives 1..20, set:
 #   export OPENDIHU_CALLBACK_MU_INDEX_BASE=1
 callback_mu_index_base = int(os.environ.get("OPENDIHU_CALLBACK_MU_INDEX_BASE", "0"))
 
@@ -101,3 +93,4 @@ def get_specific_states_frequency_jitter(fiber_no, mu_no):
 
 def get_specific_states_call_enable_begin(fiber_no, mu_no):
   return _mu(mu_no)["activation_start_time"]*1e3
+

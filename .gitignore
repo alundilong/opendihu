@@ -59,3 +59,6 @@ dependencies
 *.pvsm
 *.gif
 *.pdf
+examples/electrophysiology/fibers/fibers_fat_emg/myfolders/*
+!examples/electrophysiology/fibers/fibers_fat_emg/myfolders/tools
+*.txt
