@@ -853,4 +853,217 @@ if variables.hdemg_electrode_faces and variables.hdemg_n_electrodes_xy*variables
         
   variables.hdemg_electrode_positions = electrode_positions
 
+if rank_no == 0:
+    import numpy as np
+    import os
 
+    debug_dir = "out/" + variables.scenario_name
+    os.makedirs(debug_dir, exist_ok=True)
+
+    electrode_positions_np = np.asarray(electrode_positions, dtype=float)
+    n_points = electrode_positions_np.shape[0]
+
+    # Expected electrode grid size
+    n_xy = int(variables.hdemg_n_electrodes_xy)
+    n_z = int(variables.hdemg_n_electrodes_z)
+
+    # ------------------------------------------------------------
+    # 1. Write CSV file
+    # ------------------------------------------------------------
+    csv_file = os.path.join(debug_dir, "requested_hdemg_electrode_positions.csv")
+
+    electrode_ids = np.arange(n_points, dtype=int)
+    grid_x = electrode_ids % n_xy
+    grid_z = electrode_ids // n_xy
+
+    csv_data = np.column_stack([
+        electrode_ids,
+        grid_x,
+        grid_z,
+        electrode_positions_np[:, 0],
+        electrode_positions_np[:, 1],
+        electrode_positions_np[:, 2],
+    ])
+
+    np.savetxt(
+        csv_file,
+        csv_data,
+        delimiter=",",
+        header="electrode_id,grid_x,grid_z,x,y,z",
+        comments="",
+        fmt=["%d", "%d", "%d", "%.10g", "%.10g", "%.10g"],
+    )
+
+    print("Wrote requested HD-EMG electrode positions to:", csv_file)
+
+    # ------------------------------------------------------------
+    # 2. Build line connectivity for ParaView visualization
+    # ------------------------------------------------------------
+    line_connectivity = []
+
+    if n_points == n_xy * n_z:
+        # horizontal connections along cross-fiber direction
+        for iz in range(n_z):
+            for ix in range(n_xy - 1):
+                p0 = iz * n_xy + ix
+                p1 = iz * n_xy + ix + 1
+                line_connectivity.append((p0, p1))
+
+        # vertical connections along fiber direction
+        for iz in range(n_z - 1):
+            for ix in range(n_xy):
+                p0 = iz * n_xy + ix
+                p1 = (iz + 1) * n_xy + ix
+                line_connectivity.append((p0, p1))
+    else:
+        print(
+            "Warning: n_points does not equal hdemg_n_electrodes_xy * "
+            "hdemg_n_electrodes_z. Writing points only."
+        )
+
+    n_lines = len(line_connectivity)
+
+    # Compute line lengths for debugging
+    line_lengths = []
+    for p0, p1 in line_connectivity:
+        d = np.linalg.norm(electrode_positions_np[p1] - electrode_positions_np[p0])
+        line_lengths.append(d)
+
+    # ------------------------------------------------------------
+    # 3. Write VTP file
+    # ------------------------------------------------------------
+    vtp_file = os.path.join(debug_dir, "requested_hdemg_electrode_positions.vtp")
+
+    # Important:
+    # In VTK PolyData, CellData applies to ALL cells.
+    # Here we have:
+    #   n_points vertex cells
+    #   n_lines line cells
+    # Therefore each CellData array must have n_points + n_lines values.
+    n_vertex_cells = n_points
+    n_line_cells = n_lines
+    n_total_cells = n_vertex_cells + n_line_cells
+
+    # Cell data arrays
+    # First n_points entries correspond to vertex cells.
+    # Last n_lines entries correspond to line cells.
+    cell_type = []
+    cell_line_length = []
+
+    # Vertex cells
+    for _ in range(n_vertex_cells):
+        cell_type.append(0)          # 0 = vertex electrode point
+        cell_line_length.append(0.0) # no line length for vertex cells
+
+    # Line cells
+    for length in line_lengths:
+        cell_type.append(1)          # 1 = grid connection line
+        cell_line_length.append(float(length))
+
+    with open(vtp_file, "w") as f:
+        f.write('<?xml version="1.0"?>\n')
+        f.write('<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">\n')
+        f.write('  <PolyData>\n')
+        f.write(
+            '    <Piece NumberOfPoints="{}" NumberOfVerts="{}" NumberOfLines="{}">\n'.format(
+                n_points, n_vertex_cells, n_line_cells
+            )
+        )
+
+        # --------------------------------------------------------
+        # Point data
+        # --------------------------------------------------------
+        f.write('      <PointData Scalars="electrode_id">\n')
+
+        f.write('        <DataArray type="Int32" Name="electrode_id" format="ascii">\n')
+        f.write("          " + " ".join(str(int(i)) for i in electrode_ids) + "\n")
+        f.write('        </DataArray>\n')
+
+        f.write('        <DataArray type="Int32" Name="grid_x" format="ascii">\n')
+        f.write("          " + " ".join(str(int(v)) for v in grid_x) + "\n")
+        f.write('        </DataArray>\n')
+
+        f.write('        <DataArray type="Int32" Name="grid_z" format="ascii">\n')
+        f.write("          " + " ".join(str(int(v)) for v in grid_z) + "\n")
+        f.write('        </DataArray>\n')
+
+        f.write('      </PointData>\n')
+
+        # --------------------------------------------------------
+        # Cell data
+        # Must have n_points + n_lines values
+        # --------------------------------------------------------
+        f.write('      <CellData Scalars="cell_type">\n')
+
+        f.write('        <DataArray type="Int32" Name="cell_type" format="ascii">\n')
+        f.write("          " + " ".join(str(int(v)) for v in cell_type) + "\n")
+        f.write('        </DataArray>\n')
+
+        f.write('        <DataArray type="Float64" Name="line_length" format="ascii">\n')
+        f.write("          " + " ".join("{:.10g}".format(v) for v in cell_line_length) + "\n")
+        f.write('        </DataArray>\n')
+
+        f.write('      </CellData>\n')
+
+        # --------------------------------------------------------
+        # Point coordinates
+        # --------------------------------------------------------
+        f.write('      <Points>\n')
+        f.write('        <DataArray type="Float64" NumberOfComponents="3" format="ascii">\n')
+        for p in electrode_positions_np:
+            f.write("          {:.10g} {:.10g} {:.10g}\n".format(p[0], p[1], p[2]))
+        f.write('        </DataArray>\n')
+        f.write('      </Points>\n')
+
+        # --------------------------------------------------------
+        # Vertices: one vertex cell per electrode point
+        # --------------------------------------------------------
+        f.write('      <Verts>\n')
+
+        f.write('        <DataArray type="Int32" Name="connectivity" format="ascii">\n')
+        f.write("          " + " ".join(str(int(i)) for i in range(n_points)) + "\n")
+        f.write('        </DataArray>\n')
+
+        f.write('        <DataArray type="Int32" Name="offsets" format="ascii">\n')
+        f.write("          " + " ".join(str(int(i + 1)) for i in range(n_points)) + "\n")
+        f.write('        </DataArray>\n')
+
+        f.write('      </Verts>\n')
+
+        # --------------------------------------------------------
+        # Lines: connect expected neighboring electrodes
+        # --------------------------------------------------------
+        f.write('      <Lines>\n')
+
+        f.write('        <DataArray type="Int32" Name="connectivity" format="ascii">\n')
+        if n_line_cells > 0:
+            f.write(
+                "          "
+                + " ".join("{} {}".format(int(p0), int(p1)) for p0, p1 in line_connectivity)
+                + "\n"
+            )
+        f.write('        </DataArray>\n')
+
+        f.write('        <DataArray type="Int32" Name="offsets" format="ascii">\n')
+        if n_line_cells > 0:
+            f.write(
+                "          "
+                + " ".join(str(2 * (i + 1)) for i in range(n_line_cells))
+                + "\n"
+            )
+        f.write('        </DataArray>\n')
+
+        f.write('      </Lines>\n')
+
+        f.write('    </Piece>\n')
+        f.write('  </PolyData>\n')
+        f.write('</VTKFile>\n')
+
+    print("Wrote requested HD-EMG electrode positions VTP to:", vtp_file)
+
+    if n_lines > 0:
+        print("Electrode line length statistics:")
+        print("  min    :", np.min(line_lengths))
+        print("  mean   :", np.mean(line_lengths))
+        print("  median :", np.median(line_lengths))
+        print("  max    :", np.max(line_lengths))
