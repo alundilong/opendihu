@@ -47,6 +47,7 @@ import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation, PillowWriter
 import numpy as np
 import pyvista as pv
 import vtk
@@ -396,6 +397,118 @@ def plot_stacked_profiles(
     plt.close(fig)
 
 
+
+def make_propagation_gif(
+    data: dict,
+    output_stem: Path,
+    time_unit: str,
+    position_axis: str,
+    subtract_resting: bool,
+    resting_value: float | None,
+    linewidth: float,
+    fps: int,
+    dpi: int,
+) -> None:
+    """
+    Create a GIF animation showing the spatial Vm profile along the fiber
+    evolving in time.
+
+    x-axis:
+      fiber position
+    y-axis:
+      Vm or Vm - resting
+    frame:
+      one timestep
+    """
+
+    raw_time = np.asarray(data["time"])
+    time_plot, time_label = scaled_time(raw_time, time_unit)
+
+    vm = np.asarray(data["vm"])
+
+    if position_axis == "normalized":
+        x = np.asarray(data["normalized_position"])
+        x_label = "Normalized position along fiber"
+    else:
+        x = np.asarray(data["arc_length"])
+        x_label = "Distance along fiber"
+
+    if subtract_resting:
+        if resting_value is None:
+            rest = float(np.percentile(vm, 5.0))
+        else:
+            rest = float(resting_value)
+        plot_vm = vm - rest
+        y_label = "Vm - resting [mV]"
+    else:
+        rest = None
+        plot_vm = vm.copy()
+        y_label = "Vm [mV]"
+
+    y_min = float(np.nanmin(plot_vm))
+    y_max = float(np.nanmax(plot_vm))
+    y_pad = 0.05 * max(y_max - y_min, 1.0)
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+
+    line, = ax.plot(x, plot_vm[0, :], linewidth=linewidth)
+    time_text = ax.text(
+        0.02,
+        0.95,
+        "",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8),
+    )
+
+    title = f"Action-potential propagation: fiber {data['fiber_id']}"
+    if data["mu_id"] is not None:
+        title += f", MU {data['mu_id']}"
+    ax.set_title(title)
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_xlim(float(x[0]), float(x[-1]))
+    ax.set_ylim(y_min - y_pad, y_max + y_pad)
+    ax.grid(True, axis="x", alpha=0.25)
+
+    if subtract_resting:
+        ax.text(
+            1.01,
+            0.02,
+            f"Resting value removed: {rest:.2f} mV",
+            transform=ax.transAxes,
+            rotation=90,
+            va="bottom",
+            ha="left",
+            fontsize=8,
+        )
+
+    def update(frame_index: int):
+        line.set_ydata(plot_vm[frame_index, :])
+        time_text.set_text(f"{time_label}: {time_plot[frame_index]:.4g}")
+        return line, time_text
+
+    animation = FuncAnimation(
+        fig,
+        update,
+        frames=len(time_plot),
+        interval=1000.0 / max(fps, 1),
+        blit=False,
+        repeat=True,
+    )
+
+    gif_filename = str(output_stem) + "_propagation.gif"
+    animation.save(
+        gif_filename,
+        writer=PillowWriter(fps=max(fps, 1)),
+        dpi=dpi,
+    )
+
+    plt.close(fig)
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plot Vm distributions along a selected fiber at multiple timesteps, stacked vertically."
@@ -421,6 +534,10 @@ def main() -> None:
     parser.add_argument("--vm-range", type=float, nargs=2, default=None,
                         help="Reserved for future use; not needed for line-profile plot.")
     parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--make-gif", action="store_true",
+                        help="Also create a GIF animation of Vm(x) over time.")
+    parser.add_argument("--gif-fps", type=int, default=6,
+                        help="Frames per second for the propagation GIF.")
     args = parser.parse_args()
 
     entries = discover_files(args.input)
@@ -458,6 +575,19 @@ def main() -> None:
             profile_indices=profile_indices,
             output_stem=output_stem,
         )
+
+        if args.make_gif:
+            make_propagation_gif(
+                data=data,
+                output_stem=output_stem,
+                time_unit=args.time_unit,
+                position_axis=args.position_axis,
+                subtract_resting=args.subtract_resting,
+                resting_value=args.resting_value,
+                linewidth=args.linewidth,
+                fps=args.gif_fps,
+                dpi=args.dpi,
+            )
 
         print("")
         print(f"fiber_id: {fiber_id}")
