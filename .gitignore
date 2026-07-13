@@ -62,3 +62,4 @@ dependencies
 examples/electrophysiology/fibers/fibers_fat_emg/myfolders/*
 !examples/electrophysiology/fibers/fibers_fat_emg/myfolders/tools
 *.txt
+examples/electrophysiology/fibers/fibers_fat_emg/tmp.sh

@@ -29,14 +29,14 @@ python tools/compare_electrodes_four_cases_protocol_B.py
 python tools/publication_style_emg_figures.py --csv emg_overlay_by_electrode/metrics_by_electrode.csv --out-dir metric_plots
 python tools/publication_style_emg_figures.py --csv emg_overlay_by_electrode_protocol_B/metrics_by_electrode.csv --out-dir metric_plots_protocol_B
 
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_50/electrodes.csv --stimulation-log build_release/out/death_50/stimulation.log --out-dir build_release/out/death_50/viz_death_50
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_25/electrodes.csv --stimulation-log build_release/out/death_25/stimulation.log --out-dir build_release/out/death_25/viz_death_25
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_75/electrodes.csv --stimulation-log build_release/out/death_75/stimulation.log --out-dir build_release/out/death_75/viz_death_75
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/healthy/electrodes.csv --stimulation-log build_release/out/healthy/stimulation.log --out-dir build_release/out/healthy/viz_healthy 
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_50/electrodes.csv --stimulation-log build_release/out/death_50/stimulation.log --out-dir build_release/out/death_50/viz_death_50 --stim-ylim 0 21
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_25/electrodes.csv --stimulation-log build_release/out/death_25/stimulation.log --out-dir build_release/out/death_25/viz_death_25 --stim-ylim 0 21
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_75/electrodes.csv --stimulation-log build_release/out/death_75/stimulation.log --out-dir build_release/out/death_75/viz_death_75 --stim-ylim 0 21
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/healthy/electrodes.csv --stimulation-log build_release/out/healthy/stimulation.log --out-dir build_release/out/healthy/viz_healthy --stim-ylim 0 21
 
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_50_protocol_B/electrodes.csv --stimulation-log build_release/out/death_50_protocol_B/stimulation.log --out-dir build_release/out/death_50_protocol_B/viz_death_50_protocol_B
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_25_protocol_B/electrodes.csv --stimulation-log build_release/out/death_25_protocol_B/stimulation.log --out-dir build_release/out/death_25_protocol_B/viz_death_25_protocol_B
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_75_protocol_B/electrodes.csv --stimulation-log build_release/out/death_75_protocol_B/stimulation.log --out-dir build_release/out/death_75_protocol_B/viz_death_75_protocol_B
-python tools/visualize_opendihu_emg_enhanced.py build_release/out/healthy_protocol_B/electrodes.csv --stimulation-log build_release/out/healthy_protocol_B/stimulation.log --out-dir build_release/out/healthy_protocol_B/viz_healthy_protocol_B 
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_50_protocol_B/electrodes.csv --stimulation-log build_release/out/death_50_protocol_B/stimulation.log --out-dir build_release/out/death_50_protocol_B/viz_death_50_protocol_B --stim-ylim 0 21
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_25_protocol_B/electrodes.csv --stimulation-log build_release/out/death_25_protocol_B/stimulation.log --out-dir build_release/out/death_25_protocol_B/viz_death_25_protocol_B --stim-ylim 0 21
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_75_protocol_B/electrodes.csv --stimulation-log build_release/out/death_75_protocol_B/stimulation.log --out-dir build_release/out/death_75_protocol_B/viz_death_75_protocol_B --stim-ylim 0 21
+python tools/visualize_opendihu_emg_enhanced.py build_release/out/healthy_protocol_B/electrodes.csv --stimulation-log build_release/out/healthy_protocol_B/stimulation.log --out-dir build_release/out/healthy_protocol_B/viz_healthy_protocol_B --stim-ylim 0 21
 
 python tools/analyze_protocol_ab_same_out.py --out-root build_release/out/ --out-dir protocol_AB_analysis

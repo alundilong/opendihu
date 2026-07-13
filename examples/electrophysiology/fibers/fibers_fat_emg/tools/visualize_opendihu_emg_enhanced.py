@@ -8,6 +8,7 @@ Creates:
   2. animated grid plot of all electrode traces
   3. animated electrode-map heat plot
   4. legacy VTK export of electrode positions for ParaView
+  5. optional user-defined MU-axis limits for the stimulation/raster panel
 
 Supported electrodes.csv formats:
   A. timestamp;t;n_points;p0_x;p0_y;p0_z;...;p0_value;...
@@ -394,7 +395,7 @@ def animate_emg_grid(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy
     return result
 
 
-def animate_emg_map(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy: int, n_points_z: int, y_limits: Tuple[float, float], stim: Dict, fps: int, dpi: int, max_frames: int, prefer_mp4: bool = True) -> Path:
+def animate_emg_map(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy: int, n_points_z: int, y_limits: Tuple[float, float], stim: Dict, fps: int, dpi: int, max_frames: int, prefer_mp4: bool = True, stim_ylim: Optional[Tuple[float, float]] = None) -> Path:
     from matplotlib import gridspec
     frame_indices = compute_frame_indices(emg.shape[0], max_frames)
     has_stim = bool(stim.get("mu_times", {}))
@@ -423,15 +424,22 @@ def animate_emg_map(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy:
         fiber_mu_nos = stim["fiber_mu_nos"]
         end_time_s = max(stim["end_time_s"], t[-1] / 1000.0)
         max_mu = max(stim["max_mu"], 1)
+        if stim_ylim is None:
+            stim_ymin, stim_ymax = 0.0, float(max_mu)
+        else:
+            stim_ymin, stim_ymax = float(stim_ylim[0]), float(stim_ylim[1])
+            if stim_ymin >= stim_ymax:
+                raise ValueError(f"--stim-ylim requires MIN < MAX, got {stim_ylim}")
+
         for mu_no, times in mu_times.items():
             ax_stim.plot([0, end_time_s], [mu_no, mu_no], color=(0.82, 0.82, 0.82), linewidth=0.6)
         for fiber_no, times in fiber_times.items():
             mu_no = fiber_mu_nos[fiber_no]
             if len(times):
-                ax_stim.plot(list(times), [mu_no for _ in times], "+", markersize=3)
-        time_line, = ax_stim.plot([t[0] / 1000.0, t[0] / 1000.0], [0, max_mu], color="k", linewidth=1.2)
+                ax_stim.plot(list(times), [mu_no for _ in times], "+", markersize=6)
+        time_line, = ax_stim.plot([t[0] / 1000.0, t[0] / 1000.0], [stim_ymin, stim_ymax], color="k", linewidth=1.2)
         ax_stim.set_xlim(t[0] / 1000.0, t[-1] / 1000.0)
-        ax_stim.set_ylim(0, max_mu)
+        ax_stim.set_ylim(stim_ymin, stim_ymax)
         ax_stim.set_ylabel("MU no.")
         ax_stim.set_xlabel("time [s]")
         text_handle = ax_stim.text(0.02, 1.05, "", transform=ax_stim.transAxes, family="monospace")
@@ -472,6 +480,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Enhanced OpenDiHu EMG visualizer with grid animation and VTK electrode export.")
     parser.add_argument("electrodes_csv", nargs="?", default=None, help="Path to electrodes.csv")
     parser.add_argument("--stimulation-log", default=None, help="Optional path to stimulation.log")
+    parser.add_argument("--stim-ylim", type=float, nargs=2, metavar=("MIN", "MAX"), default=None,
+                        help="Y-axis limits for the stimulation/MU raster subplot, e.g. --stim-ylim 0 21")
     parser.add_argument("--out-dir", default="emg_visualization", help="Output directory")
     parser.add_argument("--n-points-xy", type=int, default=None, help="Electrodes in cross-fiber direction. For 384 electrodes, default fallback is 12.")
     parser.add_argument("--fps", type=int, default=20, help="Animation FPS")
@@ -527,7 +537,7 @@ def main() -> None:
             animate_emg_grid(out_dir / "emg_grid_animation", t=t, emg=emg, n_points_xy=n_points_xy, n_points_z=n_points_z, y_limits=y_limits, fps=args.fps, dpi=args.dpi, max_frames=args.max_frames, moving_window=args.moving_window, window_ms=args.window_ms, prefer_mp4=prefer_mp4)
         if not args.skip_map_animation:
             stim = read_stimulation_log(Path(args.stimulation_log) if args.stimulation_log else None)
-            animate_emg_map(out_dir / "emg_map_animation", t=t, emg=emg, n_points_xy=n_points_xy, n_points_z=n_points_z, y_limits=y_limits, stim=stim, fps=args.fps, dpi=args.dpi, max_frames=args.max_frames, prefer_mp4=prefer_mp4)
+            animate_emg_map(out_dir / "emg_map_animation", t=t, emg=emg, n_points_xy=n_points_xy, n_points_z=n_points_z, y_limits=y_limits, stim=stim, fps=args.fps, dpi=args.dpi, max_frames=args.max_frames, prefer_mp4=prefer_mp4, stim_ylim=tuple(args.stim_ylim) if args.stim_ylim is not None else None)
 
     metadata = {
         "electrodes_csv": str(emg_filename),
@@ -543,6 +553,7 @@ def main() -> None:
         "emg_max_mV": y_limits[1],
         "positions_are_fallback": bool(data["positions_are_fallback"]),
         "detected_format": data["detected_format"],
+        "stim_ylim": list(args.stim_ylim) if args.stim_ylim is not None else None,
     }
     with (out_dir / "visualization_metadata.json").open("w") as f:
         json.dump(metadata, f, indent=2)
