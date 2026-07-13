@@ -179,35 +179,59 @@ void FastMonodomainSolverBase<
   fiberPointBuffersStatesAreCloseToEquilibrium_[0] = active;
   fiberPointBuffersStatesAreCloseToEquilibrium_[nPointBuffers - 1] = active;
 
-  int fiberDataNo = 0;
-  int pointBuffersNoAtFiberStart = 0;
+  // Map the globally packed SIMD point buffers to fibers by the true scalar
+  // offsets stored in FiberData.  The previous implementation assumed that
+  // every fiber occupied an integer number of SIMD buffers.  This is false
+  // whenever valuesLength is not divisible by Vc::double_v::size(), e.g.
+  // 1481 points with SIMD width 4.  The resulting offset drift caused the
+  // stimulation point to be missed from fiber 247 onward.
+  std::size_t fiberDataNo = 0;
+  const global_no_t vectorWidth =
+      static_cast<global_no_t>(Vc::double_v::size());
+
+  // Diagnostic counters are evaluated only once per solver instance.
+  static bool stimulationPointMappingReported = false;
+  std::vector<bool> stimulationPointFound;
+  if (!stimulationPointMappingReported)
+    stimulationPointFound.assign(fiberData_.size(), false);
 
   for (global_no_t pointBuffersNo = 0; pointBuffersNo < nPointBuffers;
        pointBuffersNo++) {
     LOG(DEBUG) << "inside loop over pointBuffers, iteration " << pointBuffersNo
                << "/" << nPointBuffers;
 
-    // determine if the point buffer belongs to a new fiberDataNo
-    const bool newFiber = (pointBuffersNo - pointBuffersNoAtFiberStart) *
-                          Vc::double_v::size() /
-                          fiberData_[fiberDataNo].valuesLength;
+    const global_no_t bufferBegin = pointBuffersNo * vectorWidth;
+    const global_no_t bufferEnd = bufferBegin + vectorWidth;
 
-    if (newFiber) {
-      pointBuffersNoAtFiberStart = pointBuffersNo;
+    // Advance monotonically to the fiber that owns bufferBegin.  This is
+    // O(nPointBuffers + nFibers) over the complete loop and does not perform
+    // a search for every point buffer.
+    while (fiberDataNo + 1 < fiberData_.size() &&
+           bufferBegin >= fiberData_[fiberDataNo + 1].valuesOffset) {
       fiberDataNo++;
-      LOG(DEBUG) << "at pointbuffersNo " << pointBuffersNo
-                 << " starts fiberDataNo: " << fiberDataNo
-                 << " with size: " << fiberData_[fiberDataNo].valuesLength;
     }
 
-    int indexInFiber = pointBuffersNo * Vc::double_v::size() -
-                       fiberData_[fiberDataNo].valuesOffset;
+    assert(fiberDataNo < fiberData_.size());
 
-    // determine if current point is at center of fiber
-    int fiberCenterIndex = fiberData_[fiberDataNo].fiberStimulationPointIndex;
-    bool currentPointIsInCenter =
-        (unsigned long)(fiberCenterIndex - indexInFiber) <
-        Vc::double_v::size(); // note that this is different from abs(...)
+    const global_no_t fiberOffset = fiberData_[fiberDataNo].valuesOffset;
+    const global_no_t indexInFiber = bufferBegin - fiberOffset;
+
+    // Determine whether the global stimulation point lies in this SIMD
+    // buffer.  Using global indices avoids unsigned underflow and cumulative
+    // per-fiber rounding errors.
+    const global_no_t fiberCenterIndex =
+        static_cast<global_no_t>(
+            fiberData_[fiberDataNo].fiberStimulationPointIndex);
+
+    const global_no_t fiberCenterGlobalIndex =
+        fiberOffset + fiberCenterIndex;
+
+    const bool currentPointIsInCenter =
+        bufferBegin <= fiberCenterGlobalIndex &&
+        fiberCenterGlobalIndex < bufferEnd;
+
+    if (!stimulationPointMappingReported && currentPointIsInCenter)
+      stimulationPointFound[fiberDataNo] = true;
 
     VLOG(3) << "currentPointIsInCenter: " << currentPointIsInCenter
             << ", pointBuffersNo: " << pointBuffersNo
@@ -274,6 +298,29 @@ void FastMonodomainSolverBase<
 
     // VLOG(3) << "-> index " << pointBuffersNo << ", states [" << state0 << ","
     // << state1 << "," << state2 << "," << state3 << "]";
+  }
+
+  if (!stimulationPointMappingReported) {
+    std::size_t nMappedFibers = 0;
+    for (std::size_t i = 0; i < stimulationPointFound.size(); i++) {
+      if (stimulationPointFound[i]) {
+        nMappedFibers++;
+      } else {
+        LOG(ERROR) << "No SIMD point buffer contains the stimulation point of "
+                   << "fiberDataNo " << i << ", global fiber "
+                   << fiberData_[i].fiberNoGlobal << ", valuesOffset "
+                   << fiberData_[i].valuesOffset << ", valuesLength "
+                   << fiberData_[i].valuesLength << ", local stimulation "
+                   << "index "
+                   << fiberData_[i].fiberStimulationPointIndex;
+      }
+    }
+
+    LOG(INFO) << "FastMonodomainSolver SIMD stimulation-point mapping: "
+              << nMappedFibers << "/" << fiberData_.size()
+              << " fibers mapped.";
+
+    stimulationPointMappingReported = true;
   }
 
   // visualize equilibrium states for debugging
