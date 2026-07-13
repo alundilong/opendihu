@@ -353,6 +353,211 @@ if False:
   with open("3DFatMesh_{}".format(rank_no),"w") as f:
     f.write(str(variables.meshes["3DFatMesh"]))
 
+# -------------------------------------------------------------------------
+# Debug output: write the actual coarsened 3DFatMesh used by OpenDiHu
+# -------------------------------------------------------------------------
+if True:
+    import os
+    import numpy as np
+
+    def write_structured_hex_mesh_vtu(filename, node_positions, n_elements):
+        """
+        Write a structured hexahedral mesh as VTU.
+
+        node_positions:
+            list/array of node coordinates, ordered with x-index fastest:
+            index = k*n_nodes_y*n_nodes_x + j*n_nodes_x + i
+
+        n_elements:
+            [n_elements_x, n_elements_y, n_elements_z]
+        """
+        node_positions = np.asarray(node_positions, dtype=float)
+
+        nx, ny, nz = [int(v) for v in n_elements]
+        n_nodes_x = nx + 1
+        n_nodes_y = ny + 1
+        n_nodes_z = nz + 1
+
+        expected_n_nodes = n_nodes_x * n_nodes_y * n_nodes_z
+
+        if node_positions.shape[0] != expected_n_nodes:
+            print("Cannot write structured VTU for 3DFatMesh.")
+            print("  expected nodes:", expected_n_nodes)
+            print("  actual nodes:  ", node_positions.shape[0])
+            print("  n_elements:    ", n_elements)
+            print("Writing point cloud VTP instead.")
+
+            point_filename = filename.replace(".vtu", "_points.vtp")
+            write_points_vtp(point_filename, node_positions)
+            return
+
+        def node_index(i, j, k):
+            return k * n_nodes_y * n_nodes_x + j * n_nodes_x + i
+
+        cells = []
+        for k in range(nz):
+            for j in range(ny):
+                for i in range(nx):
+                    # VTK_HEXAHEDRON node ordering
+                    n0 = node_index(i,     j,     k)
+                    n1 = node_index(i + 1, j,     k)
+                    n2 = node_index(i + 1, j + 1, k)
+                    n3 = node_index(i,     j + 1, k)
+                    n4 = node_index(i,     j,     k + 1)
+                    n5 = node_index(i + 1, j,     k + 1)
+                    n6 = node_index(i + 1, j + 1, k + 1)
+                    n7 = node_index(i,     j + 1, k + 1)
+                    cells.append([n0, n1, n2, n3, n4, n5, n6, n7])
+
+        n_points = node_positions.shape[0]
+        n_cells = len(cells)
+
+        connectivity = []
+        offsets = []
+        types = []
+
+        offset = 0
+        for cell in cells:
+            connectivity.extend(cell)
+            offset += 8
+            offsets.append(offset)
+            types.append(12)   # VTK_HEXAHEDRON = 12
+
+        with open(filename, "w") as f:
+            f.write('<?xml version="1.0"?>\n')
+            f.write('<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">\n')
+            f.write('  <UnstructuredGrid>\n')
+            f.write(f'    <Piece NumberOfPoints="{n_points}" NumberOfCells="{n_cells}">\n')
+
+            # Point data
+            f.write('      <PointData Scalars="node_id">\n')
+
+            f.write('        <DataArray type="Int32" Name="node_id" format="ascii">\n')
+            f.write("          " + " ".join(str(i) for i in range(n_points)) + "\n")
+            f.write('        </DataArray>\n')
+
+            # useful structured indices
+            node_i = []
+            node_j = []
+            node_k = []
+            for kk in range(n_nodes_z):
+                for jj in range(n_nodes_y):
+                    for ii in range(n_nodes_x):
+                        node_i.append(ii)
+                        node_j.append(jj)
+                        node_k.append(kk)
+
+            f.write('        <DataArray type="Int32" Name="i_index" format="ascii">\n')
+            f.write("          " + " ".join(str(v) for v in node_i) + "\n")
+            f.write('        </DataArray>\n')
+
+            f.write('        <DataArray type="Int32" Name="j_index" format="ascii">\n')
+            f.write("          " + " ".join(str(v) for v in node_j) + "\n")
+            f.write('        </DataArray>\n')
+
+            f.write('        <DataArray type="Int32" Name="k_index" format="ascii">\n')
+            f.write("          " + " ".join(str(v) for v in node_k) + "\n")
+            f.write('        </DataArray>\n')
+
+            f.write('      </PointData>\n')
+
+            # Cell data
+            f.write('      <CellData Scalars="cell_id">\n')
+            f.write('        <DataArray type="Int32" Name="cell_id" format="ascii">\n')
+            f.write("          " + " ".join(str(i) for i in range(n_cells)) + "\n")
+            f.write('        </DataArray>\n')
+            f.write('      </CellData>\n')
+
+            # Coordinates
+            f.write('      <Points>\n')
+            f.write('        <DataArray type="Float64" NumberOfComponents="3" format="ascii">\n')
+            for p in node_positions:
+                f.write("          {:.10g} {:.10g} {:.10g}\n".format(p[0], p[1], p[2]))
+            f.write('        </DataArray>\n')
+            f.write('      </Points>\n')
+
+            # Cells
+            f.write('      <Cells>\n')
+
+            f.write('        <DataArray type="Int32" Name="connectivity" format="ascii">\n')
+            f.write("          " + " ".join(str(v) for v in connectivity) + "\n")
+            f.write('        </DataArray>\n')
+
+            f.write('        <DataArray type="Int32" Name="offsets" format="ascii">\n')
+            f.write("          " + " ".join(str(v) for v in offsets) + "\n")
+            f.write('        </DataArray>\n')
+
+            f.write('        <DataArray type="UInt8" Name="types" format="ascii">\n')
+            f.write("          " + " ".join(str(v) for v in types) + "\n")
+            f.write('        </DataArray>\n')
+
+            f.write('      </Cells>\n')
+
+            f.write('    </Piece>\n')
+            f.write('  </UnstructuredGrid>\n')
+            f.write('</VTKFile>\n')
+
+        print("Wrote coarsened 3DFatMesh VTU:", filename)
+
+
+    def write_points_vtp(filename, node_positions):
+        """
+        Fallback: write points only.
+        """
+        node_positions = np.asarray(node_positions, dtype=float)
+        n_points = node_positions.shape[0]
+
+        with open(filename, "w") as f:
+            f.write('<?xml version="1.0"?>\n')
+            f.write('<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">\n')
+            f.write('  <PolyData>\n')
+            f.write(f'    <Piece NumberOfPoints="{n_points}" NumberOfVerts="{n_points}">\n')
+
+            f.write('      <PointData Scalars="node_id">\n')
+            f.write('        <DataArray type="Int32" Name="node_id" format="ascii">\n')
+            f.write("          " + " ".join(str(i) for i in range(n_points)) + "\n")
+            f.write('        </DataArray>\n')
+            f.write('      </PointData>\n')
+
+            f.write('      <Points>\n')
+            f.write('        <DataArray type="Float64" NumberOfComponents="3" format="ascii">\n')
+            for p in node_positions:
+                f.write("          {:.10g} {:.10g} {:.10g}\n".format(p[0], p[1], p[2]))
+            f.write('        </DataArray>\n')
+            f.write('      </Points>\n')
+
+            f.write('      <Verts>\n')
+            f.write('        <DataArray type="Int32" Name="connectivity" format="ascii">\n')
+            f.write("          " + " ".join(str(i) for i in range(n_points)) + "\n")
+            f.write('        </DataArray>\n')
+            f.write('        <DataArray type="Int32" Name="offsets" format="ascii">\n')
+            f.write("          " + " ".join(str(i + 1) for i in range(n_points)) + "\n")
+            f.write('        </DataArray>\n')
+            f.write('      </Verts>\n')
+
+            f.write('    </Piece>\n')
+            f.write('  </PolyData>\n')
+            f.write('</VTKFile>\n')
+
+        print("Wrote point-cloud VTP:", filename)
+
+
+    debug_dir = os.path.join("out", variables.scenario_name)
+    os.makedirs(debug_dir, exist_ok=True)
+
+    mesh = variables.meshes["3DFatMesh"]
+
+    node_positions = mesh["nodePositions"]
+    n_elements = mesh["nElements"]
+
+    # Write one file per rank, useful if running MPI.
+    filename = os.path.join(
+        debug_dir,
+        "coarsened_3DFatMesh_rank{:04d}.vtu".format(rank_no)
+    )
+
+    write_structured_hex_mesh_vtu(filename, node_positions, n_elements)
+
 # create mappings between meshes
 variables.mappings_between_meshes = {"MeshFiber_{}".format(i) : "3Dmesh" for i in range(variables.n_fibers_total)}
 variables.mappings_between_meshes.update({
