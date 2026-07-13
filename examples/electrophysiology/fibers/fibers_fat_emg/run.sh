@@ -40,3 +40,5 @@ python tools/visualize_opendihu_emg_enhanced.py build_release/out/death_75_proto
 python tools/visualize_opendihu_emg_enhanced.py build_release/out/healthy_protocol_B/electrodes.csv --stimulation-log build_release/out/healthy_protocol_B/stimulation.log --out-dir build_release/out/healthy_protocol_B/viz_healthy_protocol_B --stim-ylim 0 21
 
 python tools/analyze_protocol_ab_same_out.py --out-root build_release/out/ --out-dir protocol_AB_analysis
+
+python tools/plot_fiber_action_potential.py build_release/out/healthy --fiber-id 125 --max-profiles 10 --time-unit ms --position-axis normalized --subtract-resting --resting-value -75 --output-dir build_release/out/healthy/fiber_spatial_profiles --make-gif
