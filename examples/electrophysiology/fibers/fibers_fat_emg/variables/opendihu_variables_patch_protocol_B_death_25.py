@@ -100,4 +100,4 @@ def get_specific_states_frequency_jitter(fiber_no, mu_no):
   return _mu(mu_no)["jitter"]
 
 def get_specific_states_call_enable_begin(fiber_no, mu_no):
-  return _mu(mu_no)["activation_start_time"]*1e3
+  return _mu(mu_no)["activation_start_time"]*1e3*0

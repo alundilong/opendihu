@@ -13,7 +13,7 @@ generated_input_directory = os.environ.get(
 
 firing_times_file = os.path.join(generated_input_directory, "MU_firing_times_always.txt")
 fiber_distribution_file = os.path.join(generated_input_directory, "MU_fibre_distribution_37x37_20.txt")
-motor_units_file = os.path.join(generated_input_directory, "motor_units2.json")
+motor_units_file = os.path.join(generated_input_directory, "motor_units.json")
 
 with open(motor_units_file, "r") as f:
     motor_units_payload = json.load(f)
@@ -92,5 +92,5 @@ def get_specific_states_frequency_jitter(fiber_no, mu_no):
   return _mu(mu_no)["jitter"]
 
 def get_specific_states_call_enable_begin(fiber_no, mu_no):
-  return _mu(mu_no)["activation_start_time"]
+  return _mu(mu_no)["activation_start_time"]*1e3*0
 
