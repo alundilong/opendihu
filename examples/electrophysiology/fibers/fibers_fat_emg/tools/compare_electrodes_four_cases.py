@@ -47,6 +47,11 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.animation import FuncAnimation, PillowWriter
 
 
+# Journal-readable default for all plot text: titles, axis labels, tick labels,
+# legends, annotations, and any colorbar labels added in the future.
+plt.rcParams.update({"font.size": 14})
+
+
 DEFAULT_CASES = [
     ("healthy", "healthy"),
     ("death_25", "death_25"),
@@ -338,7 +343,7 @@ def plot_one_electrode(
     ax.set_ylabel("sEMG [mV]")
     ax.set_title(f"Electrode {channel:03d}  |  grid y={grid_y}, x={grid_x}")
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="best", fontsize=9)
+    ax.legend(loc="best")
     fig.tight_layout()
     fig.savefig(out_file, dpi=dpi)
     plt.close(fig)
@@ -376,7 +381,7 @@ def animate_one_electrode(
     ax.set_ylabel("sEMG [mV]")
     ax.set_title(f"Electrode {channel:03d}  |  grid y={grid_y}, x={grid_x}")
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="best", fontsize=9)
+    ax.legend(loc="best")
 
     frame_indices = list(range(1, len(t) + 1, max(1, anim_step)))
     if frame_indices[-1] != len(t):
@@ -515,7 +520,7 @@ def main() -> None:
             ax.set_ylabel("sEMG [mV]")
             ax.set_title(f"Electrode {ch:03d}  |  grid y={ch // n_points_xy}, x={ch % n_points_xy}")
             ax.grid(True, alpha=0.25)
-            ax.legend(loc="best", fontsize=9)
+            ax.legend(loc="best")
             fig.tight_layout()
             pdf_pages.savefig(fig)
             plt.close(fig)

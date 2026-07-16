@@ -53,6 +53,11 @@ import pyvista as pv
 import vtk
 
 
+# Use a consistent, publication-friendly default for all plot text, including
+# titles, axis labels, tick labels, and annotations.
+plt.rcParams.update({"font.size": 14})
+
+
 FILE_PATTERN = re.compile(r"^fibers_(\d+)\.vtp$")
 
 
@@ -351,44 +356,20 @@ def plot_stacked_profiles(
                 f"{time_plot[time_index]:.4g}",
                 va="center",
                 ha="left",
-                fontsize=8,
+                fontsize=14,
             )
 
     ax.set_yticks(offsets)
     ax.set_yticklabels([f"{time_plot[idx]:.4g}" for idx in profile_indices])
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(time_label)
+    ax.set_xlabel(x_label, fontsize=14)
+    ax.set_ylabel(time_label, fontsize=14)
 
     title = f"Spatial action-potential profiles: fiber {data['fiber_id']}"
     if data["mu_id"] is not None:
         title += f", MU {data['mu_id']}"
     ax.set_title(title)
 
-    if subtract_resting:
-        ax.text(
-            1.01,
-            0.02,
-            f"Resting value removed: {rest:.2f} mV",
-            transform=ax.transAxes,
-            rotation=90,
-            va="bottom",
-            ha="left",
-            fontsize=8,
-        )
-
     ax.grid(True, axis="x", alpha=0.25)
-
-    # Add a small annotation clarifying the vertical stacking.
-    ax.text(
-        0.01,
-        0.98,
-        f"Profiles stacked vertically\nQuantity in each row: {profile_label}",
-        transform=ax.transAxes,
-        va="top",
-        ha="left",
-        fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7),
-    )
 
     fig.tight_layout()
 
@@ -452,44 +433,25 @@ def make_propagation_gif(
     fig, ax = plt.subplots(figsize=(8.5, 4.8))
 
     line, = ax.plot(x, plot_vm[0, :], linewidth=linewidth)
-    time_text = ax.text(
-        0.02,
-        0.95,
-        "",
-        transform=ax.transAxes,
-        va="top",
-        ha="left",
-        fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8),
+    title_base = f"Action-potential propagation: fiber {data['fiber_id']}"
+    if data["mu_id"] is not None:
+        title_base += f", MU {data['mu_id']}"
+    title = ax.set_title(
+        f"{title_base} — {time_label}: {time_plot[0]:.4g}"
     )
 
-    title = f"Action-potential propagation: fiber {data['fiber_id']}"
-    if data["mu_id"] is not None:
-        title += f", MU {data['mu_id']}"
-    ax.set_title(title)
-
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
+    ax.set_xlabel(x_label,fontsize=14)
+    ax.set_ylabel(y_label,fontsize=14)
     ax.set_xlim(float(x[0]), float(x[-1]))
     ax.set_ylim(y_min - y_pad, y_max + y_pad)
     ax.grid(True, axis="x", alpha=0.25)
 
-    if subtract_resting:
-        ax.text(
-            1.01,
-            0.02,
-            f"Resting value removed: {rest:.2f} mV",
-            transform=ax.transAxes,
-            rotation=90,
-            va="bottom",
-            ha="left",
-            fontsize=8,
-        )
-
     def update(frame_index: int):
         line.set_ydata(plot_vm[frame_index, :])
-        time_text.set_text(f"{time_label}: {time_plot[frame_index]:.4g}")
-        return line, time_text
+        title.set_text(
+            f"{title_base} — {time_label}: {time_plot[frame_index]:.4g}"
+        )
+        return line, title
 
     animation = FuncAnimation(
         fig,

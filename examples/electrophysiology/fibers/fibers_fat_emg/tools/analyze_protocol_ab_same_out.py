@@ -52,6 +52,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+# Journal-readable default for all plot text, including titles, axis labels,
+# tick labels, legends, annotations, panel labels, and colorbars.
+plt.rcParams.update({"font.size": 14})
+
+
 CASES = ["healthy", "death_25", "death_50", "death_75"]
 DISEASE_CASES = ["death_25", "death_50", "death_75"]
 
@@ -74,6 +79,15 @@ PROTOCOL_B_FOLDERS = {
     "death_25": "death_25_protocol_B",
     "death_50": "death_50_protocol_B",
     "death_75": "death_75_protocol_B",
+}
+
+# Publication-style metric names. Avoid str.title(), which incorrectly renders
+# abbreviations such as RMS as "Rms" and produces terse labels such as "Corr".
+METRIC_DISPLAY = {
+    "rms": "RMS",
+    "peak_to_peak": "Peak-to-peak amplitude",
+    "max_abs": "Maximum absolute EMG",
+    "corr_vs_healthy": "Correlation vs Healthy",
 }
 
 
@@ -387,7 +401,6 @@ def panel_label(ax, label):
     ax.text(
         0.02, 0.98, label,
         transform=ax.transAxes,
-        fontsize=13,
         fontweight="bold",
         va="top",
         ha="left",
@@ -397,9 +410,8 @@ def panel_label(ax, label):
 
 
 def set_heatmap_style(ax):
-    ax.set_xlabel("Electrode x index", fontsize=9)
-    ax.set_ylabel("Electrode y index", fontsize=9)
-    ax.tick_params(labelsize=8)
+    ax.set_xlabel("Electrode x index")
+    ax.set_ylabel("Electrode y index")
 
 
 def create_protocol_maps(df, n_points_xy, n_points_z, out_dir, protocol_label, metric="rms"):
@@ -417,7 +429,7 @@ def create_protocol_maps(df, n_points_xy, n_points_z, out_dir, protocol_label, m
             to_grid(metric_array(df, case, metric), n_points_xy, n_points_z),
             aspect="auto", origin="upper", vmin=vmin, vmax=vmax
         )
-        ax.set_title(CASE_DISPLAY[case], fontsize=11)
+        ax.set_title(CASE_DISPLAY[case])
         set_heatmap_style(ax)
         panel_label(ax, chr(ord("A") + i))
     cbar1 = fig.colorbar(im_top, ax=axes[0, :], shrink=0.88, pad=0.015, aspect=28)
@@ -434,7 +446,7 @@ def create_protocol_maps(df, n_points_xy, n_points_z, out_dir, protocol_label, m
             to_grid(metric_array(df, case, metric) - healthy, n_points_xy, n_points_z),
             aspect="auto", origin="upper", vmin=-diff_abs, vmax=diff_abs, cmap="coolwarm"
         )
-        ax.set_title("{} - Healthy".format(CASE_DISPLAY[case]), fontsize=11)
+        ax.set_title("{} - Healthy".format(CASE_DISPLAY[case]))
         set_heatmap_style(ax)
         panel_label(ax, chr(ord("E") + i))
     cbar2 = fig.colorbar(im_diff, ax=axes[1, 0:3], shrink=0.88, pad=0.015, aspect=28)
@@ -445,13 +457,12 @@ def create_protocol_maps(df, n_points_xy, n_points_z, out_dir, protocol_label, m
         to_grid(corr_array(df, "death_50"), n_points_xy, n_points_z),
         aspect="auto", origin="upper", vmin=-1, vmax=1, cmap="coolwarm"
     )
-    ax_corr.set_title("Correlation: 50% vs Healthy", fontsize=11)
+    ax_corr.set_title("Correlation: 50% vs Healthy")
     set_heatmap_style(ax_corr)
     panel_label(ax_corr, "H")
     cbar3 = fig.colorbar(im_corr, ax=ax_corr, shrink=0.88, pad=0.015, aspect=28)
     cbar3.set_label("Correlation")
 
-    fig.suptitle("{}: EMG {} maps".format(protocol_label, metric.replace("_", " ")), fontsize=13)
     save_png_pdf(fig, out_dir / "fig_{}_{}_maps".format(protocol_label.replace(" ", ""), metric))
     plt.close(fig)
 
@@ -471,7 +482,7 @@ def create_A_vs_B_compensation_maps(dfA, dfB, n_points_xy, n_points_z, out_dir, 
             to_grid(diff, n_points_xy, n_points_z),
             aspect="auto", origin="upper", vmin=-diff_abs, vmax=diff_abs, cmap="coolwarm"
         )
-        ax.set_title("{}: B - A".format(CASE_DISPLAY[case]), fontsize=11)
+        ax.set_title("{}: B - A".format(CASE_DISPLAY[case]))
         set_heatmap_style(ax)
         panel_label(ax, chr(ord("A") + i))
     cbar1 = fig.colorbar(im_diff, ax=axes[0, :], shrink=0.88, pad=0.015, aspect=28)
@@ -495,13 +506,12 @@ def create_A_vs_B_compensation_maps(dfA, dfB, n_points_xy, n_points_z, out_dir, 
             to_grid(ratio, n_points_xy, n_points_z),
             aspect="auto", origin="upper", vmin=ratio_min, vmax=ratio_max
         )
-        ax.set_title("{}: B / A".format(CASE_DISPLAY[case]), fontsize=11)
+        ax.set_title("{}: B / A".format(CASE_DISPLAY[case]))
         set_heatmap_style(ax)
         panel_label(ax, chr(ord("E") + i))
     cbar2 = fig.colorbar(im_ratio, ax=axes[1, :], shrink=0.88, pad=0.015, aspect=28)
     cbar2.set_label("{} ratio".format(metric.replace("_", " ")))
 
-    fig.suptitle("Protocol B compensation effect relative to Protocol A: {}".format(metric.replace("_", " ")), fontsize=13)
     save_png_pdf(fig, out_dir / "fig_protocolA_vs_B_{}_compensation".format(metric))
     plt.close(fig)
 
@@ -533,13 +543,12 @@ def create_global_A_vs_B_summary(summaryA, summaryB, out_dir):
         ax.bar(x + width / 2, meansB, width, yerr=stdsB, capsize=3, label="Protocol B")
         ax.set_xticks(x)
         ax.set_xticklabels([CASE_DISPLAY[c] for c in cases], rotation=20)
-        ax.set_title(metric.replace("_", " ").title())
+        ax.set_title(METRIC_DISPLAY.get(metric, metric.replace("_", " ")))
         ax.grid(True, axis="y", alpha=0.25)
         if idx == 0:
-            ax.legend(fontsize=8)
+            ax.legend()
         panel_label(ax, chr(ord("A") + idx))
 
-    fig.suptitle("Global EMG metric comparison: Protocol A vs Protocol B", fontsize=13)
     save_png_pdf(fig, out_dir / "fig_protocolA_vs_B_global_summary")
     plt.close(fig)
 
@@ -548,7 +557,17 @@ def create_global_A_vs_B_summary(summaryA, summaryB, out_dir):
 
 def create_line_summary(dfA, dfB, out_dir):
     x = dfA["electrode"].to_numpy(dtype=int)
-    fig, axes = plt.subplots(1, 3, figsize=(17, 5), constrained_layout=True)
+    fig, axes = plt.subplots(1, 3, figsize=(17, 6.8))
+
+    # Reserve a dedicated bottom margin for the shared legend. This keeps the
+    # legend fully inside the exported figure without covering x-axis labels.
+    fig.subplots_adjust(
+        left=0.055,
+        right=0.985,
+        top=0.93,
+        bottom=0.32,
+        wspace=0.18,
+    )
 
     for ax, metric, ylabel in zip(
         axes,
@@ -560,11 +579,20 @@ def create_line_summary(dfA, dfB, out_dir):
             ax.plot(x, metric_array(dfB, case, metric), linewidth=1.0, linestyle="-", label="B " + CASE_DISPLAY[case])
         ax.set_xlabel("Electrode index")
         ax.set_ylabel(ylabel)
-        ax.set_title(metric.replace("_", " ").title())
+        ax.set_title(METRIC_DISPLAY.get(metric, metric.replace("_", " ")))
         ax.grid(True, alpha=0.25)
 
-    axes[0].legend(fontsize=6, loc="best", ncol=2)
-    fig.suptitle("Electrode-wise metric comparison: dashed = Protocol A, solid = Protocol B", fontsize=13)
+    # Place one compact figure-level legend in the reserved bottom margin.
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.125),
+        ncol=4,
+        fontsize=14,
+        frameon=True,
+    )
     save_png_pdf(fig, out_dir / "fig_protocolA_vs_B_line_summary")
     plt.close(fig)
 

@@ -45,6 +45,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+# Journal-readable default for all plot text, including titles, axis labels,
+# tick labels, legends, annotations, panel labels, and colorbars.
+plt.rcParams.update({"font.size": 14})
+
+
 CASES = ["healthy", "death_25", "death_50", "death_75"]
 DISEASE_CASES = ["death_25", "death_50", "death_75"]
 CASE_DISPLAY = {
@@ -79,7 +84,6 @@ def panel_label(ax, label: str) -> None:
     ax.text(
         0.02, 0.98, label,
         transform=ax.transAxes,
-        fontsize=13,
         fontweight="bold",
         va="top",
         ha="left",
@@ -102,9 +106,8 @@ def corr_array(df: pd.DataFrame, case: str) -> np.ndarray:
 
 
 def set_heatmap_axis_style(ax) -> None:
-    ax.set_xlabel("Electrode x index", fontsize=9)
-    ax.set_ylabel("Electrode y index", fontsize=9)
-    ax.tick_params(labelsize=8)
+    ax.set_xlabel("Electrode x index")
+    ax.set_ylabel("Electrode y index")
 
 
 def create_figure1(df: pd.DataFrame, n_points_xy: int, n_points_z: int, out_dir: Path) -> None:
@@ -130,13 +133,12 @@ def create_figure1(df: pd.DataFrame, n_points_xy: int, n_points_z: int, out_dir:
         ax = axes[0, i]
         grid = to_grid(metric_array(df, case, "rms"), n_points_xy, n_points_z)
         im_top = ax.imshow(grid, aspect="auto", origin="upper", vmin=rms_vmin, vmax=rms_vmax)
-        ax.set_title(CASE_DISPLAY[case], fontsize=11, pad=8)
+        ax.set_title(CASE_DISPLAY[case], pad=8)
         set_heatmap_axis_style(ax)
         panel_label(ax, chr(ord("A") + i))
 
     cbar1 = fig.colorbar(im_top, ax=axes[0, :], shrink=0.88, pad=0.015, aspect=28)
-    cbar1.set_label("RMS [mV]", fontsize=10)
-    cbar1.ax.tick_params(labelsize=8)
+    cbar1.set_label("RMS [mV]")
 
     # Bottom row: delta RMS for first 3 columns.
     healthy = metric_array(df, "healthy", "rms")
@@ -153,13 +155,12 @@ def create_figure1(df: pd.DataFrame, n_points_xy: int, n_points_z: int, out_dir:
             grid, aspect="auto", origin="upper",
             vmin=-diff_abs, vmax=diff_abs, cmap="coolwarm"
         )
-        ax.set_title(f"{CASE_DISPLAY[case]} − Healthy", fontsize=11, pad=8)
+        ax.set_title(f"{CASE_DISPLAY[case]} − Healthy", pad=8)
         set_heatmap_axis_style(ax)
         panel_label(ax, chr(ord("E") + i))
 
     cbar2 = fig.colorbar(im_diff, ax=axes[1, 0:3], shrink=0.88, pad=0.015, aspect=28)
-    cbar2.set_label("ΔRMS [mV]", fontsize=10)
-    cbar2.ax.tick_params(labelsize=8)
+    cbar2.set_label("ΔRMS [mV]")
 
     # Bottom right: correlation map.
     ax_corr = axes[1, 3]
@@ -167,19 +168,12 @@ def create_figure1(df: pd.DataFrame, n_points_xy: int, n_points_z: int, out_dir:
         to_grid(corr_array(df, "death_50"), n_points_xy, n_points_z),
         aspect="auto", origin="upper", vmin=-1, vmax=1, cmap="coolwarm"
     )
-    ax_corr.set_title("Correlation: 50% vs Healthy", fontsize=11, pad=8)
+    ax_corr.set_title("Correlation: 50% vs Healthy", pad=8)
     set_heatmap_axis_style(ax_corr)
     panel_label(ax_corr, "H")
 
     cbar3 = fig.colorbar(im_corr, ax=ax_corr, shrink=0.88, pad=0.015, aspect=28)
-    cbar3.set_label("Correlation", fontsize=10)
-    cbar3.ax.tick_params(labelsize=8)
-
-    fig.suptitle(
-        "Figure 1. Spatial EMG changes under denervation/reinnervation remodeling\n"
-        "RMS maps show redistribution of simulated surface EMG across the electrode array.",
-        fontsize=13,
-    )
+    cbar3.set_label("Correlation")
 
     save_png_pdf(fig, out_dir / "figure1_spatial_rms_and_correlation")
     plt.close(fig)
@@ -195,17 +189,17 @@ def create_figure2(df: pd.DataFrame, out_dir: Path) -> None:
     ax1 = axes[0, 0]
     for case in CASES:
         ax1.plot(x, metric_array(df, case, "rms"), linewidth=1.2, label=CASE_DISPLAY[case])
-    ax1.set_title("Electrode-wise RMS", fontsize=11)
+    ax1.set_title("Electrode-wise RMS")
     ax1.set_xlabel("Electrode index")
     ax1.set_ylabel("RMS [mV]")
     ax1.grid(True, alpha=0.25)
-    ax1.legend(fontsize=8, loc="best")
+    ax1.legend(loc="best")
     panel_label(ax1, "A")
 
     ax2 = axes[0, 1]
     for case in CASES:
         ax2.plot(x, metric_array(df, case, "peak_to_peak"), linewidth=1.2, label=CASE_DISPLAY[case])
-    ax2.set_title("Electrode-wise peak-to-peak", fontsize=11)
+    ax2.set_title("Electrode-wise peak-to-peak")
     ax2.set_xlabel("Electrode index")
     ax2.set_ylabel("Peak-to-peak [mV]")
     ax2.grid(True, alpha=0.25)
@@ -214,7 +208,7 @@ def create_figure2(df: pd.DataFrame, out_dir: Path) -> None:
     ax3 = axes[0, 2]
     for case in CASES:
         ax3.plot(x, metric_array(df, case, "max_abs"), linewidth=1.2, label=CASE_DISPLAY[case])
-    ax3.set_title("Electrode-wise max |EMG|", fontsize=11)
+    ax3.set_title("Electrode-wise max |EMG|")
     ax3.set_xlabel("Electrode index")
     ax3.set_ylabel("Max |EMG| [mV]")
     ax3.grid(True, alpha=0.25)
@@ -223,7 +217,7 @@ def create_figure2(df: pd.DataFrame, out_dir: Path) -> None:
     ax4 = axes[1, 0]
     rms_data = [metric_array(df, case, "rms") for case in CASES]
     ax4.boxplot(rms_data, tick_labels=[CASE_DISPLAY[c] for c in CASES], showfliers=False)
-    ax4.set_title("RMS distribution across electrodes", fontsize=11)
+    ax4.set_title("RMS distribution across electrodes")
     ax4.set_ylabel("RMS [mV]")
     ax4.tick_params(axis="x", rotation=20)
     ax4.grid(True, axis="y", alpha=0.25)
@@ -232,7 +226,7 @@ def create_figure2(df: pd.DataFrame, out_dir: Path) -> None:
     ax5 = axes[1, 1]
     p2p_data = [metric_array(df, case, "peak_to_peak") for case in CASES]
     ax5.boxplot(p2p_data, tick_labels=[CASE_DISPLAY[c] for c in CASES], showfliers=False)
-    ax5.set_title("Peak-to-peak distribution", fontsize=11)
+    ax5.set_title("Peak-to-peak distribution")
     ax5.set_ylabel("Peak-to-peak [mV]")
     ax5.tick_params(axis="x", rotation=20)
     ax5.grid(True, axis="y", alpha=0.25)
@@ -245,18 +239,16 @@ def create_figure2(df: pd.DataFrame, out_dir: Path) -> None:
     ax6.bar(xpos, means, yerr=stds, capsize=4)
     ax6.set_xticks(xpos, [CASE_DISPLAY[c] for c in CASES], rotation=20)
     ax6.set_ylabel("RMS [mV]")
-    ax6.set_title("Global RMS summary (mean ± SD)", fontsize=11)
+    ax6.set_title("Global RMS summary (mean ± SD)")
     ax6.grid(True, axis="y", alpha=0.25)
     panel_label(ax6, "F")
 
-    fig.suptitle("Figure 2. Electrode-level summary statistics across remodeling stages", fontsize=13)
     save_png_pdf(fig, out_dir / "figure2_metric_summaries")
     plt.close(fig)
 
     fig2, ax = plt.subplots(figsize=(8.5, 5.0), constrained_layout=True)
     data = [corr_array(df, case) for case in DISEASE_CASES]
     ax.boxplot(data, tick_labels=[CASE_DISPLAY[c] for c in DISEASE_CASES], showfliers=False)
-    ax.set_title("Supplementary: correlation versus healthy", fontsize=11)
     ax.set_ylabel("Correlation")
     ax.grid(True, axis="y", alpha=0.25)
     save_png_pdf(fig2, out_dir / "supplementary_correlation_boxplot")
@@ -281,13 +273,12 @@ def create_figure3(df: pd.DataFrame, n_points_xy: int, n_points_z: int, out_dir:
         ax = axes[0, i]
         grid = to_grid(metric_array(df, case, "peak_to_peak"), n_points_xy, n_points_z)
         im_top = ax.imshow(grid, aspect="auto", origin="upper", vmin=p2p_vmin, vmax=p2p_vmax)
-        ax.set_title(CASE_DISPLAY[case], fontsize=11, pad=8)
+        ax.set_title(CASE_DISPLAY[case], pad=8)
         set_heatmap_axis_style(ax)
         panel_label(ax, chr(ord("A") + i))
 
     cbar1 = fig.colorbar(im_top, ax=axes[0, :], shrink=0.88, pad=0.015, aspect=28)
-    cbar1.set_label("Peak-to-peak [mV]", fontsize=10)
-    cbar1.ax.tick_params(labelsize=8)
+    cbar1.set_label("Peak-to-peak [mV]")
 
     healthy = metric_array(df, "healthy", "peak_to_peak")
     eps = 1e-12
@@ -304,26 +295,24 @@ def create_figure3(df: pd.DataFrame, n_points_xy: int, n_points_z: int, out_dir:
         ratio = metric_array(df, case, "peak_to_peak") / np.maximum(healthy, eps)
         grid = to_grid(ratio, n_points_xy, n_points_z)
         im_ratio = ax.imshow(grid, aspect="auto", origin="upper", vmin=ratio_vmin, vmax=ratio_vmax)
-        ax.set_title(f"{CASE_DISPLAY[case]} / Healthy", fontsize=11, pad=8)
+        ax.set_title(f"{CASE_DISPLAY[case]} / Healthy", pad=8)
         set_heatmap_axis_style(ax)
         panel_label(ax, chr(ord("E") + i))
 
     cbar2 = fig.colorbar(im_ratio, ax=axes[1, 0:3], shrink=0.88, pad=0.015, aspect=28)
-    cbar2.set_label("Peak-to-peak ratio", fontsize=10)
-    cbar2.ax.tick_params(labelsize=8)
+    cbar2.set_label("Peak-to-peak ratio")
 
     ax_line = axes[1, 3]
     x = df["electrode"].to_numpy(dtype=int)
     for case in CASES:
         ax_line.plot(x, metric_array(df, case, "peak_to_peak"), linewidth=1.0, label=CASE_DISPLAY[case])
-    ax_line.set_title("Peak-to-peak across electrodes", fontsize=11, pad=8)
+    ax_line.set_title("Peak-to-peak across electrodes", pad=8)
     ax_line.set_xlabel("Electrode index")
     ax_line.set_ylabel("Peak-to-peak [mV]")
     ax_line.grid(True, alpha=0.25)
-    ax_line.legend(fontsize=7, loc="best")
+    ax_line.legend(loc="best")
     panel_label(ax_line, "H")
 
-    fig.suptitle("Figure 3. Peak-to-peak amplitude maps and ratios versus healthy", fontsize=13)
     save_png_pdf(fig, out_dir / "figure3_peak_to_peak_maps")
     plt.close(fig)
 
