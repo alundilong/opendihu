@@ -112,6 +112,121 @@ sconsconfig.add_options(vars)
 env = Environment(tools = ['default', 'unity_build'], toolpath = ['config/tools'], variables = vars, ENV = os.environ, COMPILATIONDB_USE_ABSPATH=True,UNITY_MAX_SOURCES=20)
 vars.Save('out.py',env)
 
+# ==================== SPACK RPATH FIX PATCH (START) ====================
+def merge_rpaths(flags):
+    if isinstance(flags, str):
+        parts = flags.split()
+        new_parts = []
+        skip = False
+        for i, part in enumerate(parts):
+            if skip:
+                skip = False
+                continue
+            if part == '-Wl,-rpath' and i + 1 < len(parts):
+                next_part = parts[i+1]
+                if next_part.startswith('-Wl,/'):
+                    path = next_part[4:]  # 剥离 '-Wl,'
+                    new_parts.append(f"-Wl,-rpath,{path}")
+                elif next_part.startswith('/'):
+                    new_parts.append(f"-Wl,-rpath,{next_part}")
+                else:
+                    new_parts.append(part)
+                    new_parts.append(next_part)
+                skip = True
+            else:
+                new_parts.append(part)
+        return " ".join(new_parts)
+    elif isinstance(flags, list):
+        new_parts = []
+        skip = False
+        for i, part in enumerate(flags):
+            if skip:
+                skip = False
+                continue
+            if part == '-Wl,-rpath' and i + 1 < len(flags):
+                next_part = flags[i+1]
+                if next_part.startswith('-Wl,/'):
+                    path = next_part[4:]
+                    new_parts.append(f"-Wl,-rpath,{path}")
+                elif next_part.startswith('/'):
+                    new_parts.append(f"-Wl,-rpath,{next_part}")
+                else:
+                    new_parts.append(part)
+                    new_parts.append(next_part)
+                skip = True
+            else:
+                new_parts.append(part)
+        return new_parts
+    elif isinstance(flags, dict):
+        new_dict = {}
+        for k, v in flags.items():
+            if k in ['LINKFLAGS', 'SHLINKFLAGS', 'LDFLAGS'] or 'FLAGS' in k:
+                new_dict[k] = merge_rpaths(v)
+            else:
+                new_dict[k] = v
+        return new_dict
+    return flags
+
+# 劫持 SCons 核心方法，防止 RPATH 列表在任何添加、合并、去重操作中崩溃
+orig_Append = env.__class__.Append
+orig_Prepend = env.__class__.Prepend
+orig_AppendUnique = env.__class__.AppendUnique
+orig_PrependUnique = env.__class__.PrependUnique
+orig_MergeFlags = env.__class__.MergeFlags
+orig_ParseFlags = env.__class__.ParseFlags
+orig_setitem = env.__class__.__setitem__
+
+def clean_value(key, val):
+    if key in ['LINKFLAGS', 'SHLINKFLAGS', 'LDFLAGS'] or 'FLAGS' in key:
+        return merge_rpaths(val)
+    return val
+
+def my_Append(self, *args, **kwargs):
+    cleaned_kwargs = {k: clean_value(k, v) for k, v in kwargs.items()}
+    cleaned_args = [{k: clean_value(k, v) for k, v in arg.items()} if isinstance(arg, dict) else arg for arg in args]
+    return orig_Append(self, *cleaned_args, **cleaned_kwargs)
+
+def my_Prepend(self, *args, **kwargs):
+    cleaned_kwargs = {k: clean_value(k, v) for k, v in kwargs.items()}
+    cleaned_args = [{k: clean_value(k, v) for k, v in arg.items()} if isinstance(arg, dict) else arg for arg in args]
+    return orig_Prepend(self, *cleaned_args, **cleaned_kwargs)
+
+def my_AppendUnique(self, *args, **kwargs):
+    cleaned_kwargs = {k: clean_value(k, v) for k, v in kwargs.items()}
+    cleaned_args = [{k: clean_value(k, v) for k, v in arg.items()} if isinstance(arg, dict) else arg for arg in args]
+    return orig_AppendUnique(self, *cleaned_args, **cleaned_kwargs)
+
+def my_PrependUnique(self, *args, **kwargs):
+    cleaned_kwargs = {k: clean_value(k, v) for k, v in kwargs.items()}
+    cleaned_args = [{k: clean_value(k, v) for k, v in arg.items()} if isinstance(arg, dict) else arg for arg in args]
+    return orig_PrependUnique(self, *cleaned_args, **cleaned_kwargs)
+
+def my_MergeFlags(self, *args, **kwargs):
+    cleaned_args = [merge_rpaths(arg) for arg in args]
+    cleaned_kwargs = {k: merge_rpaths(v) for k, v in kwargs.items()}
+    return orig_MergeFlags(self, *cleaned_args, **cleaned_kwargs)
+
+def my_ParseFlags(self, *args, **kwargs):
+    cleaned_args = [merge_rpaths(arg) for arg in args]
+    cleaned_kwargs = {k: merge_rpaths(v) for k, v in kwargs.items()}
+    return orig_ParseFlags(self, *cleaned_args, **cleaned_kwargs)
+
+def my_setitem(self, key, value):
+    if key in ['LINKFLAGS', 'SHLINKFLAGS', 'LDFLAGS'] or 'FLAGS' in key:
+        value = merge_rpaths(value)
+    return orig_setitem(self, key, value)
+
+env.__class__.Append = my_Append
+env.__class__.Prepend = my_Prepend
+env.__class__.AppendUnique = my_AppendUnique
+env.__class__.PrependUnique = my_PrependUnique
+env.__class__.MergeFlags = my_MergeFlags
+env.__class__.ParseFlags = my_ParseFlags
+env.__class__.__setitem__ = my_setitem
+
+print(">>> [opendihu-patch] SCons environment class successfully patched against Spack RPATH splitting! <<<")
+# ==================== SPACK RPATH FIX PATCH (END) ====================
+
 # check for unknown variables and output warning
 unknown = vars.UnknownVariables()
 if unknown:
