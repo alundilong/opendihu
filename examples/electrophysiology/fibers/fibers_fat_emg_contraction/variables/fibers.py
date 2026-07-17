@@ -175,8 +175,8 @@ fiber_file        = input_directory+"/left_biceps_brachii_9x9fibers_b.bin"  # th
 fiber_file        = input_directory+"/left_biceps_brachii_9x9fibers.bin"
 fat_mesh_file     = fiber_file + "_fat.bin"
 
-fiber_file = "cuboid.bin"
-fat_mesh_file = "cuboid_fat2.bin"
+#fiber_file = "cuboid.bin"
+#fat_mesh_file = "cuboid_fat2.bin"
 
 
 # fiber mesh
@@ -192,8 +192,8 @@ size_z = 6
 
 
 firing_times_file = input_directory+"/MU_firing_times_always.txt"    # use setSpecificStatesCallEnableBegin and setSpecificStatesCallFrequency
-firing_times_file = input_directory+"/MU_firing_times_once.txt"    # use setSpecificStatesCallEnableBegin and setSpecificStatesCallFrequency
-firing_times_file = input_directory+"/MU_firing_times_heidlauf_10MU.txt"    # use setSpecificStatesCallEnableBegin and setSpecificStatesCallFrequency
+#firing_times_file = input_directory+"/MU_firing_times_once.txt"    # use setSpecificStatesCallEnableBegin and setSpecificStatesCallFrequency
+#firing_times_file = input_directory+"/MU_firing_times_heidlauf_10MU.txt"    # use setSpecificStatesCallEnableBegin and setSpecificStatesCallFrequency
 fiber_distribution_file = input_directory+"/MU_fibre_distribution_10MUs.txt"
 cortical_input_file = input_directory+"/cortical_input_realistic.txt"
 
