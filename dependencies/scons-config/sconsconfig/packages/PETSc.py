@@ -39,6 +39,73 @@ class PETSc(Package):
       self.run = False
       
     self.number_output_lines = 4360
+
+  def set_build_handler(self, commands):
+    """Make the bundled PETSc 3.15.5 build robust on modern HPC clusters.
+
+    OpenDiHu calls this method for the primary PETSc configuration and for all
+    fallback configurations.  Applying the compatibility changes here keeps
+    every path consistent and avoids duplicating fixes throughout ``check``.
+
+    The important changes are:
+      * do not build PT-Scotch 6.1.0, whose generated parser can fail with
+        modern flex/bison toolchains;
+      * use the system GNU make and cap PETSc build parallelism;
+      * always provide BLAS/LAPACK in fallback configurations;
+      * use the MPI Fortran wrapper whenever Fortran is enabled; and
+      * remove inherited MAKEFLAGS from PETSc's recursive build rule because
+        GNU make 4.4 exports the flag ``w`` and PETSc 3.15.5 treats it as a
+        target name.
+    """
+    patched_commands = []
+
+    for cmd in commands:
+      if './configure' in cmd:
+        # PT-Scotch is optional for MUMPS.  METIS/ParMETIS remain enabled in
+        # the full build and provide the required graph partitioning support.
+        cmd = cmd.replace('--download-ptscotch', '')
+
+        common_options = (
+          './configure '
+          '--with-bison=0 --with-flex=0 '
+          '--with-make-exec=/usr/bin/make '
+          '--with-make-np=8 --with-make-test-np=4'
+        )
+        cmd = cmd.replace('./configure', common_options, 1)
+
+        # Some original OpenDiHu fallback paths omit BLAS/LAPACK entirely.
+        # Keep the f2c fallback unchanged when Fortran is explicitly disabled.
+        if ('--download-fblaslapack' not in cmd and
+            '--download-f2cblaslapack' not in cmd):
+          cmd = cmd.replace(
+            '--prefix=${PREFIX}',
+            '--prefix=${PREFIX} --download-fblaslapack=1',
+            1
+          )
+
+        # Retry 1 supplies MPI C/C++ wrappers but omits the MPI Fortran
+        # wrapper, which causes PETSc's mpi_init link test to fail.
+        if '--with-cc=' in cmd and '--with-fc=' not in cmd:
+          cmd = cmd.replace(
+            '--with-cc=',
+            '--with-fc=mpifort --with-cc=',
+            1
+          )
+
+        patched_commands.append(cmd)
+
+        # PETSc 3.15.5 appends the parent MAKEFLAGS to a quoted recursive
+        # make invocation.  GNU make 4.4 adds "w --" to MAKEFLAGS, leading to
+        # "No rule to make target 'w'".  A leading '$' tells OpenDiHu's
+        # Package runner not to apply SCons substitution to this command.
+        patched_commands.append(
+          '$sed -i \'s/ -l$(MAKE_LOAD) $(MAKEFLAGS)"/ -l$(MAKE_LOAD)"/g\' '
+          'lib/petsc/conf/rules'
+        )
+      else:
+        patched_commands.append(cmd)
+
+    super(PETSc, self).set_build_handler(patched_commands)
       
   def check(self, ctx):
     if os.environ.get("PE_ENV") is not None:  # if on hazelhen
@@ -63,7 +130,7 @@ class PETSc(Package):
         #'PATH=${PATH}:${DEPENDENCIES_DIR}/bison/install/bin \
         './configure --prefix=${PREFIX} --with-debugging=no --with-shared-libraries=1 \
           --download-fblaslapack=1 \
-          --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch --download-sundials --download-hypre \
+          --download-mumps --download-scalapack --download-parmetis --download-metis --download-sundials --download-hypre \
           COPTFLAGS=-O3\
           CXXOPTFLAGS=-O3\
           --with-mpi-dir=${MPI_DIR} --with-batch\
@@ -87,7 +154,7 @@ class PETSc(Package):
         '$rm -rf $(ls | grep "linux")',
         './configure --prefix=${PREFIX} --with-shared-libraries=1 --with-debugging=yes \
           --download-fblaslapack=1 \
-          --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch --download-sundials --download-hypre \
+          --download-mumps --download-scalapack --download-parmetis --download-metis --download-sundials --download-hypre \
          | tee out.txt',
         '$$(sed -n \'/Configure stage complete./{n;p;}\' out.txt) | tee out2.txt',
         '$$(sed -n \'/Now to install the libraries do:/{n;p;}\' out2.txt)',
@@ -97,13 +164,13 @@ class PETSc(Package):
       # standard release build with MUMPS, without any mpi related option
       # This needs bison installed
       
-      # for metis to work, we need --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch
+      # for metis to work, we need --download-mumps --download-scalapack --download-parmetis --download-metis
       self.set_build_handler([
         'mkdir -p ${PREFIX}',
         '$rm -rf $(ls | grep "linux")',
         './configure --prefix=${PREFIX} --with-shared-libraries=1 --with-debugging=no  \
           --download-fblaslapack=1 \
-          --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch --download-sundials --download-hypre \
+          --download-mumps --download-scalapack --download-parmetis --download-metis --download-sundials --download-hypre \
           COPTFLAGS=-O3\
           CXXOPTFLAGS=-O3\
           FOPTFLAGS=-O3 | tee out.txt',
@@ -135,8 +202,8 @@ class PETSc(Package):
           './configure --prefix=${PREFIX} --with-shared-libraries=1 --with-debugging=yes \
             --with-cc='+env["mpicc"]+' --with-cxx='+env["mpiCC"]+' --with-batch \
             --download-fblaslapack=1 \
-            --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch --download-sundials --download-hypre \
-           | tee out.txt',
+            --download-mumps --download-scalapack --download-parmetis --download-metis --download-sundials --download-hypre \
+             | tee out.txt',
           '$$(sed -n \'/Configure stage complete./{n;p;}\' out.txt) | tee out2.txt',
           '$$(sed -n \'/Now to install the libraries do:/{n;p;}\' out2.txt)',
         ])
@@ -147,7 +214,7 @@ class PETSc(Package):
           '$rm -rf $(ls | grep "linux")',
           './configure --prefix=${PREFIX} --with-shared-libraries=1 --with-debugging=no \
             --with-cc='+env["mpicc"]+' --with-cxx='+env["mpiCC"]+' \
-            --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch --download-sundials --download-hypre \
+            --download-mumps --download-scalapack --download-parmetis --download-metis --download-sundials --download-hypre \
             COPTFLAGS=-O3 \
             CXXOPTFLAGS=-O3 \
             FOPTFLAGS=-O3 | tee out.txt',
@@ -172,8 +239,8 @@ class PETSc(Package):
           './configure --prefix=${PREFIX} --with-shared-libraries=1 --with-debugging=yes \
             --with-mpi-dir=${MPI_DIR} --with-batch \
             --download-fblaslapack=1 \
-            --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch --download-sundials --download-hypre \
-           | tee out.txt',
+            --download-mumps --download-scalapack --download-parmetis --download-metis --download-sundials --download-hypre \
+             | tee out.txt',
           '$$(sed -n \'/Configure stage complete./{n;p;}\' out.txt) | tee out2.txt',
           '$$(sed -n \'/Now to install the libraries do:/{n;p;}\' out2.txt)',
         ])
@@ -184,7 +251,7 @@ class PETSc(Package):
           '$rm -rf $(ls | grep "linux")',
           './configure --prefix=${PREFIX} --with-shared-libraries=1 --with-debugging=no \
             --with-mpi-dir=${MPI_DIR} \
-            --download-mumps --download-scalapack --download-parmetis --download-metis --download-ptscotch --download-sundials --download-hypre \
+            --download-mumps --download-scalapack --download-parmetis --download-metis --download-sundials --download-hypre \
             COPTFLAGS=-O3 \
             CXXOPTFLAGS=-O3 \
             FOPTFLAGS=-O3 | tee out.txt',

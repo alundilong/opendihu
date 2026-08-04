@@ -71,6 +71,7 @@ PRECICE_DOWNLOAD = True
 # MPI is normally detected by running the mpicc command. If this is not available, you can provide the MPI_DIR manually.
 #MPI_DIR = "/usr/lib/openmpi"    # standard path for openmpi on ubuntu 16.04
 MPI_DIR = "/usr/lib/x86_64-linux-gnu/openmpi"    # standard path for openmpi on ubuntu >= 18.04
+MPI_DIR = "/cluster/software/SPACK/SPACK_v0.20_dev_a2/spack/opt/spack/linux-almalinux8-x86_64/gcc-9.5.0/openmpi-4.1.5-ni35xxsxftayetk3qby5ks3gq3zpgxuk/"
 
 # Vectorized code for matrix assembly
 # Set to True for fastest code, set to False for faster compilation, note this works only using the Vc code, not std::simd code (only for GCC < 9)
