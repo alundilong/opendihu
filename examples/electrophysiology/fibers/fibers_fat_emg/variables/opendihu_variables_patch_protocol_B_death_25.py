@@ -16,7 +16,7 @@ Cm = 0.58                 # [uF/cm^2]
 
 generated_input_directory = os.environ.get(
     "OPENDIHU_GENERATED_MU_DIR",
-    r"/home/ymaom/workspace/opendihu/examples/electrophysiology/fibers/fibers_fat_emg/opendihu_distribution_generator/protocol_B_compensated_drive/death_25"
+    r"/home/maoy/data/opendihu/opendihu/examples/electrophysiology/fibers/fibers_fat_emg/opendihu_distribution_generator/protocol_B_compensated_drive/death_25"
 )
 
 firing_times_file = os.path.join(generated_input_directory, "MU_firing_times_always.txt")
