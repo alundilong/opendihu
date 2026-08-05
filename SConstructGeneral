@@ -458,7 +458,7 @@ if env["USE_VECTORIZED_FE_MATRIX_ASSEMBLY"]:
 
 # add basic linker flags for linux
 env.MergeFlags("-lpthread -ldl -lutil -lm")
-# env.MergeFlags("-fsanitize=address")
+env.MergeFlags("-g3 -O0 -fno-omit-frame-pointer -fno-optimize-sibling-calls -fno-inline -fsanitize=address")
 
 # add defines that are used in the code
 env.Append(CPPDEFINES = {'-DOPENDIHU_HOME': '\\"'+str(opendihu_home)+'\\"'})   # add define of the directory where this file is located
