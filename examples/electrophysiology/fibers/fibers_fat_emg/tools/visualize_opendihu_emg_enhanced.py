@@ -25,6 +25,8 @@ import argparse
 import json
 import math
 import re
+import shutil
+import subprocess
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -305,21 +307,183 @@ def compute_frame_indices(n_time_steps: int, max_frames: int) -> np.ndarray:
     return indices
 
 
-def save_animation_with_fallback(anim, out_base: Path, fps: int, dpi: int, prefer_mp4: bool = True) -> Path:
+def _resolve_ffmpeg_executable() -> str:
+    """
+    Resolve the FFmpeg executable used by Matplotlib.
+
+    This respects matplotlib.rcParams["animation.ffmpeg_path"], allowing users
+    to point the script to a Conda-provided FFmpeg executable when the cluster
+    system FFmpeg is unsuitable.
+    """
+    configured = str(matplotlib.rcParams.get("animation.ffmpeg_path", "ffmpeg"))
+    resolved = shutil.which(configured)
+
+    if resolved is not None:
+        return resolved
+
+    configured_path = Path(configured).expanduser()
+    if configured_path.is_file():
+        return str(configured_path)
+
+    raise RuntimeError(
+        "FFmpeg was not found. Load an FFmpeg module, activate a Conda "
+        "environment containing FFmpeg, or set --ffmpeg-path."
+    )
+
+
+def _get_ffmpeg_video_encoders(ffmpeg_executable: str) -> set[str]:
+    """Return the video encoders reported by the selected FFmpeg build."""
+    result = subprocess.run(
+        [ffmpeg_executable, "-hide_banner", "-encoders"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f'Failed to query FFmpeg encoders using "{ffmpeg_executable}".\n'
+            f"{result.stdout}"
+        )
+
+    encoders: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        # Typical encoder entry:
+        # V....D libx264  libx264 H.264 / AVC / MPEG-4 AVC ...
+        if len(fields) >= 2 and len(fields[0]) == 6 and fields[0].startswith("V"):
+            encoders.add(fields[1])
+
+    return encoders
+
+
+def _select_software_video_encoder(
+    ffmpeg_executable: str,
+    requested_codec: str = "auto",
+) -> Tuple[str, List[str]]:
+    """
+    Select a software encoder.
+
+    Generic codec name "h264" is deliberately not used. Some HPC FFmpeg builds
+    resolve it to h264_v4l2m2m, which requires a V4L2 hardware device and fails
+    on ordinary compute nodes.
+    """
+    encoders = _get_ffmpeg_video_encoders(ffmpeg_executable)
+
+    if requested_codec != "auto":
+        if requested_codec not in encoders:
+            raise RuntimeError(
+                f'FFmpeg encoder "{requested_codec}" is unavailable in '
+                f'"{ffmpeg_executable}". Available H.264/MPEG-4 encoders include: '
+                + ", ".join(
+                    sorted(
+                        name for name in encoders
+                        if "264" in name.lower() or "mpeg4" in name.lower()
+                    )
+                )
+            )
+
+        if requested_codec == "libx264":
+            return requested_codec, [
+                "-preset", "medium",
+                "-crf", "20",
+                "-pix_fmt", "yuv420p",
+            ]
+
+        if requested_codec == "mpeg4":
+            return requested_codec, [
+                "-q:v", "3",
+                "-pix_fmt", "yuv420p",
+            ]
+
+        return requested_codec, ["-pix_fmt", "yuv420p"]
+
+    if "libx264" in encoders:
+        return "libx264", [
+            "-preset", "medium",
+            "-crf", "20",
+            "-pix_fmt", "yuv420p",
+        ]
+
+    # The native FFmpeg MPEG-4 encoder is broadly available and does not
+    # require a hardware device. It is a practical HPC fallback when libx264
+    # was not compiled into the cluster FFmpeg build.
+    if "mpeg4" in encoders:
+        return "mpeg4", [
+            "-q:v", "3",
+            "-pix_fmt", "yuv420p",
+        ]
+
+    related = sorted(
+        name for name in encoders
+        if "264" in name.lower() or "mpeg4" in name.lower()
+    )
+    raise RuntimeError(
+        "No supported software MP4 encoder was found. "
+        f'FFmpeg executable: "{ffmpeg_executable}". '
+        f"Related encoders: {', '.join(related) if related else 'none'}. "
+        "Use a Conda/cluster FFmpeg build containing libx264 or mpeg4, "
+        "or request GIF explicitly with --gif."
+    )
+
+
+def save_animation_with_fallback(
+    anim,
+    out_base: Path,
+    fps: int,
+    dpi: int,
+    prefer_mp4: bool = True,
+    ffmpeg_codec: str = "auto",
+) -> Path:
+    """
+    Save an animation.
+
+    MP4 mode explicitly selects a software encoder instead of relying on
+    FFmpeg's platform-dependent interpretation of the generic "h264" codec.
+    GIF is generated only when the user explicitly passes --gif; an MP4
+    encoder failure no longer starts a potentially very slow full GIF render.
+    """
     out_base = Path(out_base)
+
     if prefer_mp4:
         mp4_file = out_base.with_suffix(".mp4")
+        ffmpeg_executable = _resolve_ffmpeg_executable()
+        codec, extra_args = _select_software_video_encoder(
+            ffmpeg_executable,
+            requested_codec=ffmpeg_codec,
+        )
+
+        print(f'Using FFmpeg: "{ffmpeg_executable}"')
+        print(f"Using software video encoder: {codec}")
+
+        writer = FFMpegWriter(
+            fps=fps,
+            codec=codec,
+            extra_args=extra_args,
+        )
+
         try:
-            writer = FFMpegWriter(fps=fps)
-            anim.save(mp4_file, writer=writer, dpi=dpi)
-            print(f'Created "{mp4_file}".')
-            return mp4_file
-        except Exception:
-            print("Failed to save MP4 with ffmpeg; falling back to GIF.")
-            traceback.print_exc()
+            anim.save(str(mp4_file), writer=writer, dpi=dpi)
+        except Exception as exc:
+            try:
+                mp4_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+            raise RuntimeError(
+                f'Failed to save MP4 using FFmpeg encoder "{codec}". '
+                "The script did not automatically start GIF generation because "
+                "large EMG animations can make GIF rendering extremely slow. "
+                "Run again with --gif only when GIF output is actually desired."
+            ) from exc
+
+        print(f'Created "{mp4_file}".')
+        return mp4_file
+
     gif_file = out_base.with_suffix(".gif")
     writer = PillowWriter(fps=fps)
-    anim.save(gif_file, writer=writer, dpi=dpi)
+    anim.save(str(gif_file), writer=writer, dpi=dpi)
     print(f'Created "{gif_file}".')
     return gif_file
 
@@ -347,7 +511,7 @@ def plot_static_emg_grid(out_file: Path, t: np.ndarray, emg: np.ndarray, n_point
     print(f'Created static EMG grid "{out_file}".')
 
 
-def animate_emg_grid(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy: int, n_points_z: int, y_limits: Tuple[float, float], fps: int, dpi: int, max_frames: int, moving_window: bool = False, window_ms: float = 40.0, prefer_mp4: bool = True) -> Path:
+def animate_emg_grid(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy: int, n_points_z: int, y_limits: Tuple[float, float], fps: int, dpi: int, max_frames: int, moving_window: bool = False, window_ms: float = 40.0, prefer_mp4: bool = True, ffmpeg_codec: str = "auto") -> Path:
     frame_indices = compute_frame_indices(emg.shape[0], max_frames)
     fig = plt.figure(figsize=(7, 12))
     axes = []
@@ -390,12 +554,12 @@ def animate_emg_grid(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy
         return lines
 
     anim = animation.FuncAnimation(fig, update, frames=frame_indices, init_func=init, interval=1000.0 / max(1, fps), blit=True, repeat=False)
-    result = save_animation_with_fallback(anim, out_base, fps=fps, dpi=dpi, prefer_mp4=prefer_mp4)
+    result = save_animation_with_fallback(anim, out_base, fps=fps, dpi=dpi, prefer_mp4=prefer_mp4, ffmpeg_codec=ffmpeg_codec)
     plt.close(fig)
     return result
 
 
-def animate_emg_map(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy: int, n_points_z: int, y_limits: Tuple[float, float], stim: Dict, fps: int, dpi: int, max_frames: int, prefer_mp4: bool = True, stim_ylim: Optional[Tuple[float, float]] = None) -> Path:
+def animate_emg_map(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy: int, n_points_z: int, y_limits: Tuple[float, float], stim: Dict, fps: int, dpi: int, max_frames: int, prefer_mp4: bool = True, stim_ylim: Optional[Tuple[float, float]] = None, ffmpeg_codec: str = "auto") -> Path:
     from matplotlib import gridspec
     frame_indices = compute_frame_indices(emg.shape[0], max_frames)
     has_stim = bool(stim.get("mu_times", {}))
@@ -458,7 +622,7 @@ def animate_emg_map(out_base: Path, t: np.ndarray, emg: np.ndarray, n_points_xy:
 
     anim = animation.FuncAnimation(fig, update, frames=frame_indices, interval=1000.0 / max(1, fps), blit=False, repeat=False)
     fig.tight_layout()
-    result = save_animation_with_fallback(anim, out_base, fps=fps, dpi=dpi, prefer_mp4=prefer_mp4)
+    result = save_animation_with_fallback(anim, out_base, fps=fps, dpi=dpi, prefer_mp4=prefer_mp4, ffmpeg_codec=ffmpeg_codec)
     plt.close(fig)
     return result
 
@@ -487,7 +651,12 @@ def main() -> None:
     parser.add_argument("--fps", type=int, default=20, help="Animation FPS")
     parser.add_argument("--dpi", type=int, default=150, help="Animation DPI")
     parser.add_argument("--max-frames", type=int, default=500, help="Maximum animation frames")
-    parser.add_argument("--gif", action="store_true", help="Save GIF instead of trying MP4 first")
+    parser.add_argument("--gif", action="store_true",
+                        help="Save GIF instead of MP4. GIF is not used automatically after an MP4 failure.")
+    parser.add_argument("--ffmpeg-path", default=None,
+                        help="Optional FFmpeg executable path, e.g. $CONDA_PREFIX/bin/ffmpeg")
+    parser.add_argument("--ffmpeg-codec", choices=("auto", "libx264", "mpeg4"), default="auto",
+                        help="Software MP4 encoder. 'auto' prefers libx264 and falls back to mpeg4.")
     parser.add_argument("--moving-window", action="store_true", help="Use moving time window for EMG grid trace animation")
     parser.add_argument("--window-ms", type=float, default=40.0, help="Moving-window width in ms")
     parser.add_argument("--skip-static", action="store_true", help="Skip static EMG grid plot")
@@ -495,6 +664,11 @@ def main() -> None:
     parser.add_argument("--skip-map-animation", action="store_true", help="Skip animated electrode-map heat plot")
     parser.add_argument("--skip-animations", action="store_true", help="Skip both animations")
     args = parser.parse_args()
+
+    if args.ffmpeg_path:
+        matplotlib.rcParams["animation.ffmpeg_path"] = str(
+            Path(args.ffmpeg_path).expanduser()
+        )
 
     if args.electrodes_csv is None:
         auto = auto_find_electrodes_csv()
@@ -534,10 +708,10 @@ def main() -> None:
     prefer_mp4 = not args.gif
     if not args.skip_animations:
         if not args.skip_grid_animation:
-            animate_emg_grid(out_dir / "emg_grid_animation", t=t, emg=emg, n_points_xy=n_points_xy, n_points_z=n_points_z, y_limits=y_limits, fps=args.fps, dpi=args.dpi, max_frames=args.max_frames, moving_window=args.moving_window, window_ms=args.window_ms, prefer_mp4=prefer_mp4)
+            animate_emg_grid(out_dir / "emg_grid_animation", t=t, emg=emg, n_points_xy=n_points_xy, n_points_z=n_points_z, y_limits=y_limits, fps=args.fps, dpi=args.dpi, max_frames=args.max_frames, moving_window=args.moving_window, window_ms=args.window_ms, prefer_mp4=prefer_mp4, ffmpeg_codec=args.ffmpeg_codec)
         if not args.skip_map_animation:
             stim = read_stimulation_log(Path(args.stimulation_log) if args.stimulation_log else None)
-            animate_emg_map(out_dir / "emg_map_animation", t=t, emg=emg, n_points_xy=n_points_xy, n_points_z=n_points_z, y_limits=y_limits, stim=stim, fps=args.fps, dpi=args.dpi, max_frames=args.max_frames, prefer_mp4=prefer_mp4, stim_ylim=tuple(args.stim_ylim) if args.stim_ylim is not None else None)
+            animate_emg_map(out_dir / "emg_map_animation", t=t, emg=emg, n_points_xy=n_points_xy, n_points_z=n_points_z, y_limits=y_limits, stim=stim, fps=args.fps, dpi=args.dpi, max_frames=args.max_frames, prefer_mp4=prefer_mp4, stim_ylim=tuple(args.stim_ylim) if args.stim_ylim is not None else None, ffmpeg_codec=args.ffmpeg_codec)
 
     metadata = {
         "electrodes_csv": str(emg_filename),
