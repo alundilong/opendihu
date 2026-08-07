@@ -145,10 +145,11 @@ template <typename FunctionSpaceType>
 typename StaticBidomain<FunctionSpaceType>::FieldVariablesForOutputWriter
 StaticBidomain<FunctionSpaceType>::getFieldVariablesForOutputWriter() {
   // these field variables will be written to output files
-  std::shared_ptr<FieldVariable::FieldVariable<FunctionSpaceType, 3>>
-      geometryField =
-          std::make_shared<FieldVariable::FieldVariable<FunctionSpaceType, 3>>(
-              this->functionSpace_->geometryField());
+  using GeometryFieldType =
+      FieldVariable::FieldVariable<FunctionSpaceType, 3>;
+  std::shared_ptr<GeometryFieldType> geometryField(
+      this->functionSpace_,
+      &this->functionSpace_->geometryField());
 
   // recover additional field variables from slotConnectorData_, they may have
   // been changed by transfer
