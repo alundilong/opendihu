@@ -63,3 +63,6 @@ examples/electrophysiology/fibers/fibers_fat_emg/myfolders/*
 !examples/electrophysiology/fibers/fibers_fat_emg/myfolders/tools
 *.txt
 examples/electrophysiology/fibers/fibers_fat_emg/tmp.sh
+examples/electrophysiology/fibers/fibers_fat_emg/fiber_dist_generator/paraview_mu_fibers/
+examples/electrophysiology/fibers/fibers_fat_emg/run_run.sh
+examples/electrophysiology/fibers/fibers_fat_emg/fiber_dist_generator/run.sh
