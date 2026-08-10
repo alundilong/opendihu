@@ -463,9 +463,119 @@ def write_distribution(mu_map, out_file, index_base):
     with open(out_file, "w") as f: f.write(" ".join(str(int(v)) for v in vals) + "\n")
 
 def write_firing_times(killed, out_file, n_rows, active_value=1):
-    row = [str(active_value if not dead else 0) for dead in killed]
+    """Write the FastMonodomain firing-event gate.
+
+    IMPORTANT
+    ---------
+    For this study the firing table is intentionally an *all-ones* gate.
+    MU survival/death is controlled by ``motor_units.json`` using
+    ``stimulation_frequency`` and ``activation_start_time``.
+
+    This avoids a FastMonodomain indexing mismatch when the fiber-distribution
+    file uses OpenDiHu's historical 1-based MU IDs.  If killed MUs were encoded
+    as zeros in this table, FastMonodomain could query the neighboring column
+    and silently suppress valid surviving MUs.
+
+    ``killed`` is retained in the function signature because it determines the
+    number of MU columns and keeps compatibility with the rest of the generator.
+    """
+    n_motor_units = len(killed)
+    row = [str(int(active_value))] * n_motor_units
     with open(out_file, "w") as f:
-        for _ in range(n_rows): f.write(" ".join(row) + "\n")
+        line = " ".join(row) + "\n"
+        for _ in range(int(n_rows)):
+            f.write(line)
+
+
+def validate_fast_monodomain_case(distribution_file, firing_file, motor_units_file,
+                                  end_time_s, index_base):
+    """Fail early if a generated case cannot stimulate as intended.
+
+    The validation is deliberately strict for the repeated study:
+      * the distribution must contain only valid MU IDs;
+      * the firing table must have one column per MU and contain only ones;
+      * every surviving MU must have positive frequency;
+      * every surviving MU must become enabled before the simulation ends;
+      * killed/silent MUs must be enabled only after the simulation ends.
+
+    Returns a compact diagnostic dictionary for metadata/manifests.
+    """
+    distribution_file = Path(distribution_file)
+    firing_file = Path(firing_file)
+    motor_units_file = Path(motor_units_file)
+
+    payload = json.loads(motor_units_file.read_text())
+    motor_units_local = payload.get("motor_units", [])
+    n_mu = len(motor_units_local)
+    if n_mu < 1:
+        raise ValueError(f"{motor_units_file}: no motor_units entries found.")
+
+    distribution = np.loadtxt(distribution_file, dtype=int).reshape(-1)
+    expected_min = int(index_base)
+    expected_max = int(index_base) + n_mu - 1
+    if distribution.size == 0:
+        raise ValueError(f"{distribution_file}: empty MU distribution.")
+    if int(distribution.min()) < expected_min or int(distribution.max()) > expected_max:
+        raise ValueError(
+            f"{distribution_file}: MU IDs must be in [{expected_min}, {expected_max}], "
+            f"found [{int(distribution.min())}, {int(distribution.max())}]."
+        )
+
+    firing = np.loadtxt(firing_file, dtype=int)
+    if firing.ndim == 1:
+        firing = firing.reshape(1, -1)
+    if firing.shape[1] != n_mu:
+        raise ValueError(
+            f"{firing_file}: expected {n_mu} MU columns, found {firing.shape[1]}."
+        )
+    if not np.all(firing == 1):
+        bad = int(np.count_nonzero(firing != 1))
+        raise ValueError(
+            f"{firing_file}: FastMonodomain-safe gate must be all ones; "
+            f"found {bad} non-one entries."
+        )
+
+    active_ids = []
+    killed_ids = []
+    for i, mu in enumerate(motor_units_local):
+        is_active = bool(mu.get("active", not mu.get("killed_or_silent", False)))
+        is_killed = bool(mu.get("killed_or_silent", False)) or not is_active
+        freq = float(mu.get("stimulation_frequency", 0.0))
+        start = float(mu.get("activation_start_time", 0.0))
+        mu_id = int(mu.get("mu_id_in_distribution_file", i + int(index_base)))
+
+        if is_killed:
+            killed_ids.append(mu_id)
+            if start <= float(end_time_s):
+                raise ValueError(
+                    f"{motor_units_file}: killed MU {mu_id} has activation_start_time="
+                    f"{start:g}s within the {float(end_time_s):g}s simulation."
+                )
+        else:
+            active_ids.append(mu_id)
+            if freq <= 0:
+                raise ValueError(
+                    f"{motor_units_file}: active MU {mu_id} has non-positive "
+                    f"stimulation_frequency={freq}."
+                )
+            if start >= float(end_time_s):
+                raise ValueError(
+                    f"{motor_units_file}: active MU {mu_id} starts at {start:g}s, "
+                    f"not before the {float(end_time_s):g}s simulation ends."
+                )
+
+    if not active_ids:
+        raise ValueError(f"{motor_units_file}: case contains no active motor units.")
+
+    return {
+        "firing_gate_mode": "all_ones_fast_monodomain_safe",
+        "n_firing_rows": int(firing.shape[0]),
+        "n_firing_columns": int(firing.shape[1]),
+        "n_active_mus": int(len(active_ids)),
+        "active_mu_ids_in_distribution_file": active_ids,
+        "n_killed_or_silent_mus": int(len(killed_ids)),
+        "killed_mu_ids_in_distribution_file": killed_ids,
+    }
 
 def write_summary(mu_map0, mu_map, mu_type, killed, motor_units, out_file,
                   target_sizes=None, recruitment_rank=None, sigma_by_mu=None):
@@ -767,8 +877,9 @@ def plot_overview(case_records, out_file):
 #   Protocol B: healthy, death_25, death_50, death_75
 #
 # Protocol B is derived from its Protocol A partner, so the MU distribution,
-# denervation/reinnervation realization, and firing gate are exactly identical.
-# Only stimulation_frequency of surviving MUs is changed.
+# denervation/reinnervation realization, and FastMonodomain all-ones firing gate
+# are exactly identical. Only stimulation_frequency of surviving MUs is changed.
+# MU death/silence is controlled in motor_units.json, not by zeroing gate columns.
 # =============================================================================
 
 import copy
@@ -991,6 +1102,12 @@ def create_protocol_a_group(group_number: int, group_dir: Path, args):
         )
         motor_units_file.write_text(json.dumps(payload, indent=2))
 
+        # Validate the FastMonodomain inputs before producing downstream artifacts.
+        fastmono_validation = validate_fast_monodomain_case(
+            distribution_file, firing_file, motor_units_file,
+            end_time_s=args.end_time_s, index_base=args.index_base,
+        )
+
         # Canonical + group-tagged audit files.
         summary_file = stage_dir / "motor_unit_summary.csv"
         write_summary(
@@ -1047,6 +1164,9 @@ def create_protocol_a_group(group_number: int, group_dir: Path, args):
             "n_silent_unreinnervated_fibers": int(np.count_nonzero(denervated)),
             "scenario_parameters": asdict(effective_scenario),
             "canonical_runtime_files": [p.name for p in (distribution_file, firing_file, motor_units_file)],
+            "fast_monodomain_firing_gate_mode": "all_ones_fast_monodomain_safe",
+            "mu_activity_control": "motor_units.json: active/killed_or_silent + stimulation_frequency + activation_start_time",
+            "fast_monodomain_validation": fastmono_validation,
         }
         metadata_file = stage_dir / "generation_metadata.json"
         metadata_file.write_text(json.dumps(metadata, indent=2))
@@ -1206,6 +1326,14 @@ def create_protocol_b_case(group_number: int, stage: str, kill_fraction: float,
 
     motor_units_file = out_stage_dir / "motor_units.json"
     motor_units_file.write_text(json.dumps(payload, indent=2))
+
+    fastmono_validation = validate_fast_monodomain_case(
+        out_stage_dir / "MU_fibre_distribution_37x37_20.txt",
+        out_stage_dir / "MU_firing_times_always.txt",
+        motor_units_file,
+        end_time_s=args.end_time_s,
+        index_base=args.index_base,
+    )
     tagged_motor_units = copy_tagged_alias(motor_units_file, sid)
 
     summary_file = out_stage_dir / "protocol_B_motor_unit_summary.csv"
@@ -1229,7 +1357,10 @@ def create_protocol_b_case(group_number: int, stage: str, kill_fraction: float,
         "expansion_alpha": args.expansion_alpha,
         "max_frequency": args.max_frequency,
         "min_frequency": args.min_frequency,
-        "paired_design_note": "Distribution and firing gate are byte-identical to Protocol A; only surviving-MU stimulation_frequency is changed.",
+        "paired_design_note": "Distribution and all-ones FastMonodomain firing gate are byte-identical to Protocol A; only surviving-MU stimulation_frequency is changed.",
+        "fast_monodomain_firing_gate_mode": "all_ones_fast_monodomain_safe",
+        "mu_activity_control": "motor_units.json: active/killed_or_silent + stimulation_frequency + activation_start_time",
+        "fast_monodomain_validation": fastmono_validation,
     }
     metadata_file = out_stage_dir / "protocol_B_metadata.json"
     metadata_file.write_text(json.dumps(metadata, indent=2))
@@ -1540,9 +1671,12 @@ def write_group_readme(group_dir: Path, group_number: int, group_rows, args):
         "  stages = healthy, death_25, death_50, death_75",
         "",
         "Pairing rule:",
-        "  Protocol B copies the MU distribution and firing gate byte-for-byte",
-        "  from the corresponding Protocol A stage. Only surviving-MU",
+        "  Protocol B copies the MU distribution and all-ones FastMonodomain firing",
+        "  gate byte-for-byte from the corresponding Protocol A stage. Only surviving-MU",
         "  stimulation_frequency is changed according to the compensated-drive rule.",
+        "  MU death/silence is controlled by motor_units.json, not by zero-valued firing",
+        "  gate columns. This avoids the 1-based distribution / FastMonodomain gate",
+        "  indexing mismatch that can suppress valid MUs at high denervation levels.",
         "",
         f"Simulation duration in generated OpenDiHu patches: {args.end_time_s:g} s",
         f"Group seed: {args.base_seed + (group_number - 1) * args.group_seed_stride}",
@@ -1736,7 +1870,7 @@ def build_arg_parser():
     parser.add_argument("--end-time-s", type=float, default=30.0,
                         help="Simulation duration written to OpenDiHu patches [s].")
     parser.add_argument("--n-firing-rows", type=int, default=None,
-                        help="Rows in always-on firing gate. Default: ceil(end_time_s*100 Hz).")
+                        help="Rows in the FastMonodomain all-ones firing gate. Default: ceil(end_time_s*100 Hz). MU death is controlled in motor_units.json, not this table.")
 
     # Structural/MU model from Protocol A generator.
     parser.add_argument("--n-fibers-x", type=int, default=37)
@@ -1779,8 +1913,9 @@ def main():
     if args.group_seed_stride <= 0:
         parser.error("--group-seed-stride must be > 0")
     if args.n_firing_rows is None:
-        # The OpenDiHu patch uses 100 Hz firing-table sampling.  For the current
-        # always-on gate, this mainly makes the file duration explicit/auditable.
+        # The OpenDiHu patch uses 100 Hz firing-table sampling. The table is an
+        # all-ones FastMonodomain gate; MU death/silence is controlled separately
+        # in motor_units.json. The row count makes the duration explicit/auditable.
         args.n_firing_rows = int(math.ceil(args.end_time_s * 100.0))
     if args.n_firing_rows < 1:
         parser.error("--n-firing-rows must be >= 1")
