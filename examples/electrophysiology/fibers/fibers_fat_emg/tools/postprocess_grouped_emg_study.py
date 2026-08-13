@@ -1578,6 +1578,451 @@ def create_single_protocol_group_mean_spatial_maps(
             fig, out_dir / f"supplementary_{protocol}3_group_sd_{metric}_maps"
         )
         plt.close(fig)
+
+
+def _group_mean_electrode_metric(
+    long_df: pd.DataFrame,
+    protocol: str,
+    stage: str,
+    metric: str,
+) -> pd.DataFrame:
+    """Return mean/SD/count across independent groups at each electrode."""
+    sub = long_df[
+        (long_df["protocol"] == str(protocol).upper())
+        & (long_df["stage"] == stage)
+    ][["group_number", "electrode", metric]].copy()
+    sub = sub[np.isfinite(sub[metric].to_numpy(dtype=float))]
+    if sub.empty:
+        return pd.DataFrame(columns=["electrode", "mean", "std", "count"])
+    return (
+        sub.groupby("electrode", sort=True)[metric]
+        .agg(["mean", "std", "count"])
+        .reset_index()
+        .sort_values("electrode")
+        .reset_index(drop=True)
+    )
+
+
+def _paired_group_electrode_difference(
+    long_df: pd.DataFrame,
+    protocol: str,
+    stage: str,
+    metric: str,
+) -> pd.DataFrame:
+    """Paired stage-minus-Healthy values, summarized across groups per electrode."""
+    p = long_df[long_df["protocol"] == str(protocol).upper()][
+        ["group_number", "stage", "electrode", metric]
+    ].copy()
+    stage_df = p[p["stage"] == stage].rename(columns={metric: "stage_value"})
+    healthy_df = p[p["stage"] == "healthy"].rename(columns={metric: "healthy_value"})
+    paired = stage_df.merge(
+        healthy_df[["group_number", "electrode", "healthy_value"]],
+        on=["group_number", "electrode"],
+        how="inner",
+        validate="one_to_one",
+    )
+    paired["value"] = paired["stage_value"] - paired["healthy_value"]
+    return (
+        paired.groupby("electrode", sort=True)["value"]
+        .agg(["mean", "std", "count"])
+        .reset_index()
+        .sort_values("electrode")
+        .reset_index(drop=True)
+    )
+
+
+def _paired_group_electrode_ratio(
+    long_df: pd.DataFrame,
+    protocol: str,
+    stage: str,
+    metric: str,
+    eps: float = 1e-15,
+) -> pd.DataFrame:
+    """Paired stage/Healthy ratio, summarized across groups per electrode."""
+    p = long_df[long_df["protocol"] == str(protocol).upper()][
+        ["group_number", "stage", "electrode", metric]
+    ].copy()
+    stage_df = p[p["stage"] == stage].rename(columns={metric: "stage_value"})
+    healthy_df = p[p["stage"] == "healthy"].rename(columns={metric: "healthy_value"})
+    paired = stage_df.merge(
+        healthy_df[["group_number", "electrode", "healthy_value"]],
+        on=["group_number", "electrode"],
+        how="inner",
+        validate="one_to_one",
+    )
+    denom = np.maximum(np.abs(paired["healthy_value"].to_numpy(dtype=float)), eps)
+    paired["value"] = paired["stage_value"].to_numpy(dtype=float) / denom
+    return (
+        paired.groupby("electrode", sort=True)["value"]
+        .agg(["mean", "std", "count"])
+        .reset_index()
+        .sort_values("electrode")
+        .reset_index(drop=True)
+    )
+
+
+def _group_mean_correlation_by_electrode(
+    long_df: pd.DataFrame,
+    protocol: str,
+    stage: str,
+) -> np.ndarray:
+    """Mean correlation across groups at each electrode for one disease stage."""
+    sub = long_df[
+        (long_df["protocol"] == str(protocol).upper())
+        & (long_df["stage"] == stage)
+    ][["electrode", "corr_vs_healthy"]].copy()
+    sub = sub[np.isfinite(sub["corr_vs_healthy"].to_numpy(dtype=float))]
+    if sub.empty:
+        return np.asarray([], dtype=float)
+    return (
+        sub.groupby("electrode", sort=True)["corr_vs_healthy"]
+        .mean()
+        .to_numpy(dtype=float)
+    )
+
+
+def create_single_protocol_group_level_figure10(
+    long_df: pd.DataFrame,
+    out_dir: Path,
+    protocol: str,
+    n_points_xy: int,
+    n_points_z: int,
+) -> None:
+    """Group-level counterpart of original Fig. 10, with Fig. 13 in panel H.
+
+    A-D: across-group mean RMS maps.
+    E-G: across-group mean of paired stage-minus-Healthy RMS maps.
+    H: Fig. 13-style correlation-with-Healthy boxplot, using the
+       across-group mean correlation at each electrode.
+    """
+    protocol = str(protocol).upper()
+    expected = int(n_points_xy) * int(n_points_z)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rms = {}
+    for stage in STAGE_NAMES:
+        a = _group_mean_electrode_metric(long_df, protocol, stage, "rms")
+        if len(a) != expected:
+            print(
+                f"Warning: Protocol {protocol} group-level Fig.10 expected {expected} "
+                f"electrodes for {stage}, found {len(a)}; skipped."
+            )
+            return
+        rms[stage] = a["mean"].to_numpy(dtype=float)
+
+    vmin = min(float(np.nanmin(v)) for v in rms.values())
+    vmax = max(float(np.nanmax(v)) for v in rms.values())
+
+    diffs = {}
+    for stage in DISEASE_CASES:
+        a = _paired_group_electrode_difference(long_df, protocol, stage, "rms")
+        if len(a) != expected:
+            print(
+                f"Warning: Protocol {protocol} group-level Fig.10 difference map "
+                f"for {stage} is incomplete; skipped."
+            )
+            return
+        diffs[stage] = a["mean"].to_numpy(dtype=float)
+    diff_abs = max(
+        max(abs(float(np.nanmin(v))), abs(float(np.nanmax(v))))
+        for v in diffs.values()
+    )
+    diff_abs = max(diff_abs, 1e-15)
+
+    fig, axes = plt.subplots(2, 4, figsize=(18.0, 9.4), constrained_layout=True)
+    fig.set_constrained_layout_pads(w_pad=0.08, h_pad=0.10, wspace=0.08, hspace=0.10)
+
+    im_top = None
+    for i, stage in enumerate(STAGE_NAMES):
+        ax = axes[0, i]
+        im_top = ax.imshow(
+            rms[stage].reshape(n_points_z, n_points_xy),
+            aspect="auto",
+            origin="upper",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        ax.set_title(CASE_DISPLAY[stage], pad=8)
+        set_heatmap_axis_style(ax)
+        panel_label(ax, chr(ord("A") + i))
+    cbar1 = fig.colorbar(im_top, ax=axes[0, :], shrink=0.88, pad=0.015, aspect=28)
+    cbar1.set_label("RMS [mV]")
+
+    im_diff = None
+    for i, stage in enumerate(DISEASE_CASES):
+        ax = axes[1, i]
+        im_diff = ax.imshow(
+            diffs[stage].reshape(n_points_z, n_points_xy),
+            aspect="auto",
+            origin="upper",
+            vmin=-diff_abs,
+            vmax=diff_abs,
+            cmap="coolwarm",
+        )
+        ax.set_title(f"{CASE_DISPLAY[stage]} - Healthy", pad=8)
+        set_heatmap_axis_style(ax)
+        panel_label(ax, chr(ord("E") + i))
+    cbar2 = fig.colorbar(im_diff, ax=axes[1, 0:3], shrink=0.88, pad=0.015, aspect=28)
+    cbar2.set_label("Delta RMS [mV]")
+
+    # User-requested replacement: use the Fig. 13 correlation boxplot in H.
+    ax_corr = axes[1, 3]
+    corr_data = [
+        _group_mean_correlation_by_electrode(long_df, protocol, stage)
+        for stage in DISEASE_CASES
+    ]
+    if all(len(v) > 0 for v in corr_data):
+        ax_corr.boxplot(
+            corr_data,
+            tick_labels=["25%", "50%", "75%"],
+            showfliers=False,
+        )
+        ax_corr.set_ylim(-1.0, 1.02)
+        ax_corr.set_xlabel("Motor-unit loss condition")
+        ax_corr.set_ylabel("Correlation")
+        ax_corr.set_title("Correlation with Healthy", pad=8)
+        ax_corr.grid(True, axis="y", alpha=0.25)
+    else:
+        ax_corr.text(
+            0.5, 0.5, "Correlation data unavailable",
+            ha="center", va="center", transform=ax_corr.transAxes,
+        )
+        ax_corr.set_axis_off()
+    panel_label(ax_corr, "H")
+
+    fig.suptitle(
+        f"Protocol {protocol}: group-level spatial RMS maps and waveform similarity\n"
+        "Maps show across-group means; differences are paired within group before averaging"
+    )
+    save_png_pdf(fig, out_dir / f"figure_{protocol}4_group_level_spatial_rms_and_correlation")
+    plt.close(fig)
+
+
+def create_single_protocol_group_level_figure11(
+    long_df: pd.DataFrame,
+    out_dir: Path,
+    protocol: str,
+) -> None:
+    """Group-level counterpart of original Fig. 11.
+
+    A-C: mean electrode profiles across groups with SD bands.
+    D-E: distributions across electrode positions of the across-group mean field.
+    F: spatial mean RMS for each independent group summarized as mean +/- SD across groups.
+    """
+    protocol = str(protocol).upper()
+    p = long_df[long_df["protocol"] == protocol].copy()
+    if p.empty:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    metric_specs = [
+        ("rms", "Electrode-wise RMS", "RMS [mV]"),
+        ("peak_to_peak", "Electrode-wise peak-to-peak", "Peak-to-peak [mV]"),
+        ("max_abs", "Electrode-wise max |EMG|", "Max |EMG| [mV]"),
+    ]
+
+    fig, axes = plt.subplots(2, 3, figsize=(17.2, 10.0), constrained_layout=True)
+    fig.set_constrained_layout_pads(w_pad=0.08, h_pad=0.10, wspace=0.08, hspace=0.10)
+
+    stage_cycle = plt.rcParams["axes.prop_cycle"].by_key().get(
+        "color", [f"C{i}" for i in range(10)]
+    )
+
+    # A-C: group mean electrode profile with between-group SD band.
+    for panel, (metric, title, ylabel) in enumerate(metric_specs):
+        ax = axes[0, panel]
+        for i, stage in enumerate(STAGE_NAMES):
+            agg = _group_mean_electrode_metric(long_df, protocol, stage, metric)
+            if agg.empty:
+                continue
+            x = agg["electrode"].to_numpy(dtype=int)
+            mean = agg["mean"].to_numpy(dtype=float)
+            sd = agg["std"].fillna(0.0).to_numpy(dtype=float)
+            color = stage_cycle[i % len(stage_cycle)]
+            ax.plot(x, mean, linewidth=1.25, color=color, label=CASE_DISPLAY[stage])
+            ax.fill_between(x, mean - sd, mean + sd, color=color, alpha=0.12, linewidth=0)
+        ax.set_title(title)
+        ax.set_xlabel("Electrode index")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.25)
+        panel_label(ax, chr(ord("A") + panel))
+        if panel == 0:
+            ax.legend(loc="best", fontsize=10)
+
+    # D: RMS distribution over electrode positions of the group-mean field.
+    ax = axes[1, 0]
+    rms_box = []
+    for stage in STAGE_NAMES:
+        agg = _group_mean_electrode_metric(long_df, protocol, stage, "rms")
+        rms_box.append(agg["mean"].to_numpy(dtype=float))
+    ax.boxplot(rms_box, tick_labels=[CASE_DISPLAY[s] for s in STAGE_NAMES], showfliers=False)
+    ax.set_title("RMS distribution across electrodes")
+    ax.set_ylabel("RMS [mV]")
+    ax.tick_params(axis="x", rotation=20)
+    ax.grid(True, axis="y", alpha=0.25)
+    panel_label(ax, "D")
+
+    # E: Peak-to-peak distribution over electrode positions of group-mean field.
+    ax = axes[1, 1]
+    p2p_box = []
+    for stage in STAGE_NAMES:
+        agg = _group_mean_electrode_metric(long_df, protocol, stage, "peak_to_peak")
+        p2p_box.append(agg["mean"].to_numpy(dtype=float))
+    ax.boxplot(p2p_box, tick_labels=[CASE_DISPLAY[s] for s in STAGE_NAMES], showfliers=False)
+    ax.set_title("Peak-to-peak distribution")
+    ax.set_ylabel("Peak-to-peak [mV]")
+    ax.tick_params(axis="x", rotation=20)
+    ax.grid(True, axis="y", alpha=0.25)
+    panel_label(ax, "E")
+
+    # F: true group-level global RMS summary. One value per group and stage.
+    ax = axes[1, 2]
+    means, stds = [], []
+    group_points = []
+    for stage in STAGE_NAMES:
+        stage_group = (
+            p[p["stage"] == stage]
+            .groupby("group_number", sort=True)["rms"]
+            .mean()
+            .to_numpy(dtype=float)
+        )
+        group_points.append(stage_group)
+        means.append(float(np.mean(stage_group)) if len(stage_group) else np.nan)
+        stds.append(float(np.std(stage_group, ddof=1)) if len(stage_group) > 1 else 0.0)
+    xpos = np.arange(len(STAGE_NAMES))
+    ax.bar(xpos, means, yerr=stds, capsize=4, alpha=0.82)
+    # Show the independent group values explicitly on top of the summary.
+    for i, vals in enumerate(group_points):
+        if len(vals):
+            jitter = np.linspace(-0.08, 0.08, len(vals)) if len(vals) > 1 else np.array([0.0])
+            ax.scatter(np.full(len(vals), xpos[i]) + jitter, vals, s=28, zorder=5)
+    ax.set_xticks(xpos, [CASE_DISPLAY[s] for s in STAGE_NAMES], rotation=20)
+    ax.set_ylabel("RMS [mV]")
+    ax.set_title("Global RMS summary (mean +/- SD across groups)")
+    ax.grid(True, axis="y", alpha=0.25)
+    panel_label(ax, "F")
+
+    fig.suptitle(
+        f"Protocol {protocol}: group-level electrode EMG summary statistics\n"
+        "Profiles and distributions use the across-group mean field; panel F uses group as the replicate"
+    )
+    save_png_pdf(fig, out_dir / f"figure_{protocol}5_group_level_metric_summaries")
+    plt.close(fig)
+
+
+def create_single_protocol_group_level_figure12(
+    long_df: pd.DataFrame,
+    out_dir: Path,
+    protocol: str,
+    n_points_xy: int,
+    n_points_z: int,
+) -> None:
+    """Group-level counterpart of original Fig. 12.
+
+    A-D: across-group mean peak-to-peak maps.
+    E-G: mean of paired stage/Healthy ratios calculated within each group first.
+    H: group mean electrode profile with SD bands.
+    """
+    protocol = str(protocol).upper()
+    expected = int(n_points_xy) * int(n_points_z)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    p2p = {}
+    for stage in STAGE_NAMES:
+        agg = _group_mean_electrode_metric(long_df, protocol, stage, "peak_to_peak")
+        if len(agg) != expected:
+            print(
+                f"Warning: Protocol {protocol} group-level Fig.12 expected {expected} "
+                f"electrodes for {stage}, found {len(agg)}; skipped."
+            )
+            return
+        p2p[stage] = agg["mean"].to_numpy(dtype=float)
+
+    vmin = min(float(np.nanmin(v)) for v in p2p.values())
+    vmax = max(float(np.nanmax(v)) for v in p2p.values())
+
+    ratios = {}
+    for stage in DISEASE_CASES:
+        agg = _paired_group_electrode_ratio(long_df, protocol, stage, "peak_to_peak")
+        if len(agg) != expected:
+            print(
+                f"Warning: Protocol {protocol} group-level Fig.12 ratio map "
+                f"for {stage} is incomplete; skipped."
+            )
+            return
+        ratios[stage] = agg["mean"].to_numpy(dtype=float)
+
+    ratio_values = np.concatenate([v[np.isfinite(v)] for v in ratios.values()])
+    if len(ratio_values):
+        ratio_vmin = max(0.0, float(np.nanpercentile(ratio_values, 1.0)))
+        ratio_vmax = float(np.nanpercentile(ratio_values, 99.0))
+        if ratio_vmax <= ratio_vmin:
+            ratio_vmax = ratio_vmin + 1e-12
+    else:
+        ratio_vmin, ratio_vmax = 0.0, 1.0
+
+    fig, axes = plt.subplots(2, 4, figsize=(18.0, 9.4), constrained_layout=True)
+    fig.set_constrained_layout_pads(w_pad=0.08, h_pad=0.10, wspace=0.08, hspace=0.10)
+
+    im_top = None
+    for i, stage in enumerate(STAGE_NAMES):
+        ax = axes[0, i]
+        im_top = ax.imshow(
+            p2p[stage].reshape(n_points_z, n_points_xy),
+            aspect="auto",
+            origin="upper",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        ax.set_title(CASE_DISPLAY[stage], pad=8)
+        set_heatmap_axis_style(ax)
+        panel_label(ax, chr(ord("A") + i))
+    cbar1 = fig.colorbar(im_top, ax=axes[0, :], shrink=0.88, pad=0.015, aspect=28)
+    cbar1.set_label("Peak-to-peak [mV]")
+
+    im_ratio = None
+    for i, stage in enumerate(DISEASE_CASES):
+        ax = axes[1, i]
+        im_ratio = ax.imshow(
+            ratios[stage].reshape(n_points_z, n_points_xy),
+            aspect="auto",
+            origin="upper",
+            vmin=ratio_vmin,
+            vmax=ratio_vmax,
+        )
+        ax.set_title(f"{CASE_DISPLAY[stage]} / Healthy", pad=8)
+        set_heatmap_axis_style(ax)
+        panel_label(ax, chr(ord("E") + i))
+    cbar2 = fig.colorbar(im_ratio, ax=axes[1, 0:3], shrink=0.88, pad=0.015, aspect=28)
+    cbar2.set_label("Peak-to-peak ratio")
+
+    ax_line = axes[1, 3]
+    stage_cycle = plt.rcParams["axes.prop_cycle"].by_key().get(
+        "color", [f"C{i}" for i in range(10)]
+    )
+    for i, stage in enumerate(STAGE_NAMES):
+        agg = _group_mean_electrode_metric(long_df, protocol, stage, "peak_to_peak")
+        x = agg["electrode"].to_numpy(dtype=int)
+        mean = agg["mean"].to_numpy(dtype=float)
+        sd = agg["std"].fillna(0.0).to_numpy(dtype=float)
+        color = stage_cycle[i % len(stage_cycle)]
+        ax_line.plot(x, mean, linewidth=1.15, color=color, label=CASE_DISPLAY[stage])
+        ax_line.fill_between(x, mean - sd, mean + sd, color=color, alpha=0.10, linewidth=0)
+    ax_line.set_title("Peak-to-peak across electrodes", pad=8)
+    ax_line.set_xlabel("Electrode index")
+    ax_line.set_ylabel("Peak-to-peak [mV]")
+    ax_line.grid(True, alpha=0.25)
+    ax_line.legend(loc="best", fontsize=9)
+    panel_label(ax_line, "H")
+
+    fig.suptitle(
+        f"Protocol {protocol}: group-level peak-to-peak amplitude maps and ratios relative to Healthy\n"
+        "Ratio maps are paired within group before averaging"
+    )
+    save_png_pdf(fig, out_dir / f"figure_{protocol}6_group_level_peak_to_peak_maps")
+    plt.close(fig)
+
+
 def create_manuscript_group_trajectories(group_summary: pd.DataFrame, out_dir: Path) -> None:
     """Main manuscript plot: raw group trajectories plus mean ± SD.
     Thin lines show the individual stochastic group realizations. Thick lines and
@@ -1959,12 +2404,18 @@ def write_manuscript_figure_readme(out_dir: Path, n_groups: int, spatial_metric:
         "   01_protocol_A/figure_A2_percent_change_vs_healthy.png/pdf",
         "     Within-group change relative to each group's own Healthy baseline.",
         f"   01_protocol_A/figure_A3_group_mean_{spatial_metric}_maps.png/pdf",
+        "   01_protocol_A/figure_A4_group_level_spatial_rms_and_correlation.png/pdf",
+        "   01_protocol_A/figure_A5_group_level_metric_summaries.png/pdf",
+        "   01_protocol_A/figure_A6_group_level_peak_to_peak_maps.png/pdf",
         "     Across-group mean spatial phenotype for Protocol A.",
         "",
         "2) Establish Protocol B behavior independently",
         "   02_protocol_B/figure_B1_group_trajectories.png/pdf",
         "   02_protocol_B/figure_B2_percent_change_vs_healthy.png/pdf",
         f"   02_protocol_B/figure_B3_group_mean_{spatial_metric}_maps.png/pdf",
+        "   02_protocol_B/figure_B4_group_level_spatial_rms_and_correlation.png/pdf",
+        "   02_protocol_B/figure_B5_group_level_metric_summaries.png/pdf",
+        "   02_protocol_B/figure_B6_group_level_peak_to_peak_maps.png/pdf",
         "",
         "3) Only then compare Protocol A with Protocol B",
         "   03_protocol_comparison/figure_C1_protocol_A_vs_B_group_trajectories.png/pdf",
@@ -2296,6 +2747,11 @@ def main() -> None:
             create_single_protocol_group_trajectories(
                 group_summary, pdir, protocol
             )
+            # Group-level counterparts of the original case-level manuscript figures.
+            # Figure A/B5 corresponds to original Fig. 11 and does not require reshaping.
+            create_single_protocol_group_level_figure11(
+                long_df, pdir, protocol
+            )
             if not normalized_group_summary.empty:
                 create_single_protocol_normalized_trajectories(
                     normalized_group_summary, pdir, protocol
@@ -2312,6 +2768,22 @@ def main() -> None:
                         protocol_dirs[protocol],
                         protocol,
                         args.manuscript_spatial_metric,
+                        n_points_xy,
+                        n_points_z,
+                    )
+                    # Three additional group-level figures requested for the manuscript:
+                    # modified Fig.10 (with Fig.13 correlation boxplot in panel H), Fig.11, Fig.12.
+                    create_single_protocol_group_level_figure10(
+                        long_df,
+                        protocol_dirs[protocol],
+                        protocol,
+                        n_points_xy,
+                        n_points_z,
+                    )
+                    create_single_protocol_group_level_figure12(
+                        long_df,
+                        protocol_dirs[protocol],
+                        protocol,
                         n_points_xy,
                         n_points_z,
                     )
