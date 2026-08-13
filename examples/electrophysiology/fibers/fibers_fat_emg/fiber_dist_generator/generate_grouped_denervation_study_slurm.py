@@ -74,14 +74,10 @@ def make_motor_units_json(mu_type, killed, out_file, index_base, seed,
         radius = exp_range_value(rank, n_motor_units, 40.0, 55.0, increasing=True)
         stimulation_frequency = exp_range_value(rank, n_motor_units, 7.0, 24.0, increasing=False)
 
-        if original_opendihu_style:
-            activation_start_time = 0.0 if rank < n_motor_units / 2 else 10.0
-        else:
-            # Explicit type-linked recruitment timing.
-            activation_start_time = 0.0 if type_id == 0 else (5.0 if type_id == 1 else 10.0)
-
         active = not bool(killed[mu_no])
-        if not active:
+        if active:
+            activation_start_time = 0
+        else:
             activation_start_time = 1e9
             stimulation_frequency = 0.0
 
