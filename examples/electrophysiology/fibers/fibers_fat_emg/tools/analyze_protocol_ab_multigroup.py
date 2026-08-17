@@ -1726,6 +1726,8 @@ def create_figure20_electrode_wise_protocol_comparison(long_df, out_dir):
 
     Lines show the across-group mean at each electrode. Protocol A/B are
     distinguished by line style while the MU-loss condition keeps the same color.
+    Protocol B is drawn first and Protocol A is overlaid as a dashed line so that
+    nearly coincident A/B curves remain visible.
     """
     panels = [
         ("rms", "RMS", "RMS [mV]"),
@@ -1743,7 +1745,15 @@ def create_figure20_electrode_wise_protocol_comparison(long_df, out_dir):
     for ax, (metric, title, ylabel) in zip(axes, panels):
         for stage_idx, stage in enumerate(CASES):
             color = cycle_colors[stage_idx % len(cycle_colors)] if cycle_colors else None
-            for protocol, linestyle in (("A", "--"), ("B", "-")):
+
+            # Draw Protocol B first, then Protocol A on top. When the two
+            # profiles nearly coincide (especially for peak-to-peak and max
+            # |EMG|), plotting B last can completely hide the dashed A curve.
+            # No data are shifted; only draw order/style are changed.
+            for protocol, linestyle, linewidth, alpha, zorder in (
+                ("B", "-", 1.6, 0.78, 2),
+                ("A", "--", 1.9, 1.00, 3),
+            ):
                 electrode, mean, sd = _electrode_group_profile(
                     long_df, protocol, stage, metric
                 )
@@ -1752,9 +1762,11 @@ def create_figure20_electrode_wise_protocol_comparison(long_df, out_dir):
                     electrode,
                     mean,
                     linestyle=linestyle,
-                    linewidth=1.25,
+                    linewidth=linewidth,
+                    alpha=alpha,
                     color=color,
                     label=label,
+                    zorder=zorder,
                 )
 
                 export_frames.append(pd.DataFrame({
