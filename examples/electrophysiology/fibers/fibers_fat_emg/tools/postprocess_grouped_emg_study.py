@@ -74,10 +74,10 @@ Default output layout
             ...
             metrics_by_electrode.csv
           metric_plots/
-            figure1_spatial_rms_and_correlation.png/.pdf
+            figure1_spatial_rms_and_psd_similarity.png/.pdf
             figure2_metric_summaries.png/.pdf
             figure3_peak_to_peak_maps.png/.pdf
-            supplementary_correlation_boxplot.png/.pdf
+            supplementary_similarity_boxplots.png/.pdf
             publication_summary_table.csv
         protocol_B/
           ...
@@ -121,7 +121,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-plt.rcParams.update({"font.size": 14})
+PLOT_FONT_SIZE = 14
+plt.rcParams.update({
+    "font.size": PLOT_FONT_SIZE,
+    "axes.titlesize": PLOT_FONT_SIZE,
+    "axes.labelsize": PLOT_FONT_SIZE,
+    "xtick.labelsize": PLOT_FONT_SIZE,
+    "ytick.labelsize": PLOT_FONT_SIZE,
+    "legend.fontsize": PLOT_FONT_SIZE,
+    "figure.titlesize": PLOT_FONT_SIZE,
+})
 STAGES: List[Tuple[str, float]] = [
     ("healthy", 0.00),
     ("death_25", 0.25),
@@ -438,14 +447,252 @@ def subtract_baseline(y: np.ndarray, n_baseline: int = 10) -> np.ndarray:
     if n <= 0:
         return y
     return y - np.mean(y[:n])
+def _safe_pearson(x: np.ndarray, y: np.ndarray) -> float:
+    """Pearson correlation for equal-length finite vectors; NaN if undefined."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    if np.count_nonzero(mask) < 3:
+        return np.nan
+    x = x[mask] - np.mean(x[mask])
+    y = y[mask] - np.mean(y[mask])
+    denom = float(np.linalg.norm(x) * np.linalg.norm(y))
+    return np.nan if denom <= 0.0 else float(np.dot(x, y) / denom)
+
+def _cosine_similarity_nonnegative(x: np.ndarray, y: np.ndarray) -> float:
+    """Cosine similarity, primarily used for non-negative PSD/spatial metric vectors."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    if np.count_nonzero(mask) < 2:
+        return np.nan
+    x = x[mask]
+    y = y[mask]
+    denom = float(np.linalg.norm(x) * np.linalg.norm(y))
+    return np.nan if denom <= 0.0 else float(np.clip(np.dot(x, y) / denom, -1.0, 1.0))
+
+def _welch_psd_numpy(
+    y: np.ndarray,
+    t_ms: np.ndarray,
+    window_ms: float = 1000.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Lightweight Welch PSD using NumPy only (50% overlap, Hann window).
+
+    The OpenDiHu electrode time vector is expressed in milliseconds in this
+    postprocessor. Segment averaging deliberately suppresses sensitivity to the
+    exact timing/phase of individual motor-unit discharges over a long record.
+    """
+    y = np.asarray(y, dtype=float)
+    t_ms = np.asarray(t_ms, dtype=float)
+    if len(y) != len(t_ms) or len(y) < 8:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    dt_ms = float(np.median(np.diff(t_ms)))
+    if not np.isfinite(dt_ms) or dt_ms <= 0.0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    fs_hz = 1000.0 / dt_ms
+    nperseg = int(round(float(window_ms) / dt_ms))
+    nperseg = min(len(y), max(8, nperseg))
+    step = max(1, nperseg // 2)
+    window = np.hanning(nperseg)
+    win_norm = float(np.sum(window ** 2))
+    if win_norm <= 0.0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    starts = list(range(0, max(1, len(y) - nperseg + 1), step))
+    if not starts or starts[-1] != len(y) - nperseg:
+        starts.append(len(y) - nperseg)
+    spectra: List[np.ndarray] = []
+    for start in starts:
+        seg = y[start:start + nperseg]
+        if len(seg) != nperseg:
+            continue
+        seg = seg - np.mean(seg)
+        fft = np.fft.rfft(seg * window)
+        power = (np.abs(fft) ** 2) / win_norm
+        spectra.append(power)
+    if not spectra:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    psd = np.mean(np.vstack(spectra), axis=0)
+    freq = np.fft.rfftfreq(nperseg, d=1.0 / fs_hz)
+    return freq, psd
+
+def psd_cosine_similarity(
+    ref: np.ndarray,
+    y: np.ndarray,
+    t_ms: np.ndarray,
+    window_ms: float = 1000.0,
+) -> float:
+    """Phase-insensitive similarity of Welch power spectra, bounded near [0, 1]."""
+    f_ref, p_ref = _welch_psd_numpy(ref, t_ms, window_ms=window_ms)
+    f_y, p_y = _welch_psd_numpy(y, t_ms, window_ms=window_ms)
+    if len(p_ref) == 0 or len(p_ref) != len(p_y) or len(f_ref) != len(f_y):
+        return np.nan
+    # DC is excluded because every segment is mean-centered and DC carries no
+    # useful information about EMG waveform organization here.
+    if len(p_ref) > 1:
+        p_ref = p_ref[1:]
+        p_y = p_y[1:]
+    return _cosine_similarity_nonnegative(p_ref, p_y)
+
+def windowed_abs_correlation_similarity(
+    ref: np.ndarray,
+    y: np.ndarray,
+    t_ms: np.ndarray,
+    window_ms: float = 250.0,
+) -> float:
+    """Secondary local waveform diagnostic: mean |r| across non-overlapping windows.
+
+    Unlike a single 30-s Pearson coefficient, this measure does not require
+    phase alignment to persist across the entire recording. It remains a
+    secondary diagnostic because stochastic discharge jitter can still reduce it.
+    """
+    ref = np.asarray(ref, dtype=float)
+    y = np.asarray(y, dtype=float)
+    t_ms = np.asarray(t_ms, dtype=float)
+    if len(ref) != len(y) or len(ref) != len(t_ms) or len(ref) < 8:
+        return np.nan
+    dt_ms = float(np.median(np.diff(t_ms)))
+    if not np.isfinite(dt_ms) or dt_ms <= 0.0:
+        return np.nan
+    nwin = max(8, int(round(float(window_ms) / dt_ms)))
+    vals: List[float] = []
+    for start in range(0, len(ref) - nwin + 1, nwin):
+        r = _safe_pearson(ref[start:start + nwin], y[start:start + nwin])
+        if np.isfinite(r):
+            vals.append(abs(float(r)))
+    return float(np.mean(vals)) if vals else np.nan
+
+def _welch_psd_matrix_numpy(
+    y: np.ndarray,
+    t_ms: np.ndarray,
+    window_ms: float = 1000.0,
+) -> np.ndarray:
+    """Vectorized Welch PSD for a [time, electrode] matrix."""
+    y = np.asarray(y, dtype=float)
+    t_ms = np.asarray(t_ms, dtype=float)
+    if y.ndim != 2 or y.shape[0] != len(t_ms) or y.shape[0] < 8:
+        return np.empty((0, y.shape[1] if y.ndim == 2 else 0), dtype=float)
+    dt_ms = float(np.median(np.diff(t_ms)))
+    if not np.isfinite(dt_ms) or dt_ms <= 0.0:
+        return np.empty((0, y.shape[1]), dtype=float)
+    nperseg = int(round(float(window_ms) / dt_ms))
+    nperseg = min(y.shape[0], max(8, nperseg))
+    step = max(1, nperseg // 2)
+    window = np.hanning(nperseg)[:, None]
+    win_norm = float(np.sum(window[:, 0] ** 2))
+    starts = list(range(0, max(1, y.shape[0] - nperseg + 1), step))
+    if not starts or starts[-1] != y.shape[0] - nperseg:
+        starts.append(y.shape[0] - nperseg)
+    accum: Optional[np.ndarray] = None
+    n_used = 0
+    for start in starts:
+        seg = y[start:start + nperseg, :]
+        if seg.shape[0] != nperseg:
+            continue
+        seg = seg - np.mean(seg, axis=0, keepdims=True)
+        fft = np.fft.rfft(seg * window, axis=0)
+        power = (np.abs(fft) ** 2) / win_norm
+        if accum is None:
+            accum = np.zeros_like(power, dtype=float)
+        accum += power
+        n_used += 1
+    if accum is None or n_used == 0:
+        return np.empty((0, y.shape[1]), dtype=float)
+    psd = accum / float(n_used)
+    return psd[1:, :] if psd.shape[0] > 1 else psd
+
+def _columnwise_cosine_similarity(ref: np.ndarray, y: np.ndarray) -> np.ndarray:
+    if ref.shape != y.shape or ref.ndim != 2:
+        raise ValueError("PSD matrices must have the same [frequency, electrode] shape.")
+    numerator = np.sum(ref * y, axis=0)
+    denom = np.sqrt(np.sum(ref ** 2, axis=0) * np.sum(y ** 2, axis=0))
+    out = np.full(ref.shape[1], np.nan, dtype=float)
+    valid = denom > 0.0
+    out[valid] = np.clip(numerator[valid] / denom[valid], -1.0, 1.0)
+    return out
+
+def _windowed_abs_corr_matrix(
+    ref: np.ndarray,
+    y: np.ndarray,
+    t_ms: np.ndarray,
+    window_ms: float,
+) -> np.ndarray:
+    """Mean |Pearson r| per electrode across non-overlapping local windows."""
+    ref = np.asarray(ref, dtype=float)
+    y = np.asarray(y, dtype=float)
+    t_ms = np.asarray(t_ms, dtype=float)
+    if ref.shape != y.shape or ref.ndim != 2 or ref.shape[0] != len(t_ms):
+        raise ValueError("Local-correlation matrices must share the same time/electrode layout.")
+    dt_ms = float(np.median(np.diff(t_ms)))
+    if not np.isfinite(dt_ms) or dt_ms <= 0.0:
+        return np.full(ref.shape[1], np.nan, dtype=float)
+    nwin = max(8, int(round(float(window_ms) / dt_ms)))
+    sums = np.zeros(ref.shape[1], dtype=float)
+    counts = np.zeros(ref.shape[1], dtype=int)
+    for start in range(0, ref.shape[0] - nwin + 1, nwin):
+        a = ref[start:start + nwin, :]
+        b = y[start:start + nwin, :]
+        a = a - np.mean(a, axis=0, keepdims=True)
+        b = b - np.mean(b, axis=0, keepdims=True)
+        numerator = np.sum(a * b, axis=0)
+        denom = np.sqrt(np.sum(a ** 2, axis=0) * np.sum(b ** 2, axis=0))
+        valid = denom > 0.0
+        r = np.full(ref.shape[1], np.nan, dtype=float)
+        r[valid] = np.clip(numerator[valid] / denom[valid], -1.0, 1.0)
+        finite = np.isfinite(r)
+        sums[finite] += np.abs(r[finite])
+        counts[finite] += 1
+    out = np.full(ref.shape[1], np.nan, dtype=float)
+    valid = counts > 0
+    out[valid] = sums[valid] / counts[valid]
+    return out
+
+def precompute_similarity_cache(
+    cases: Dict[str, Dict[str, object]],
+    healthy_name: str = "healthy",
+    subtract_mean: bool = False,
+    psd_window_ms: float = 1000.0,
+    local_corr_window_ms: float = 250.0,
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """Compute timing-robust similarity arrays once for all electrodes.
+
+    This avoids recomputing the Healthy PSD for every disease stage/electrode and
+    keeps the 30-s postprocessing practical for 384-channel arrays.
+    """
+    t_ms = np.asarray(cases[healthy_name]["t"], dtype=float)
+    matrices: Dict[str, np.ndarray] = {}
+    for name, c in cases.items():
+        y = np.asarray(c["emg"], dtype=float).copy()
+        if subtract_mean:
+            n = min(10, y.shape[0])
+            y = y - np.mean(y[:n, :], axis=0, keepdims=True)
+        matrices[name] = y
+    ref = matrices[healthy_name]
+    psd_ref = _welch_psd_matrix_numpy(ref, t_ms, window_ms=psd_window_ms)
+    cache: Dict[str, Dict[str, np.ndarray]] = {}
+    for name, y in matrices.items():
+        if name == healthy_name:
+            continue
+        psd_y = _welch_psd_matrix_numpy(y, t_ms, window_ms=psd_window_ms)
+        cache[name] = {
+            "psd_similarity_vs_healthy": _columnwise_cosine_similarity(psd_ref, psd_y),
+            "local_waveform_similarity_vs_healthy": _windowed_abs_corr_matrix(
+                ref, y, t_ms, window_ms=local_corr_window_ms
+            ),
+        }
+    return cache
+
 def compute_metrics(
     cases: Dict[str, Dict[str, object]],
     channel: int,
     healthy_name: str = "healthy",
     subtract_mean: bool = False,
+    psd_window_ms: float = 1000.0,
+    local_corr_window_ms: float = 250.0,
+    similarity_cache: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
 ) -> Dict[str, float]:
     row: Dict[str, float] = {"electrode": int(channel)}
     ref = np.asarray(cases[healthy_name]["emg"], dtype=float)[:, channel]
+    t_ms = np.asarray(cases[healthy_name]["t"], dtype=float)
     if subtract_mean:
         ref = subtract_baseline(ref)
     for name, c in cases.items():
@@ -457,11 +704,20 @@ def compute_metrics(
         row[f"{name}_max_abs"] = float(np.max(np.abs(y)))
         row[f"{name}_mean"] = float(np.mean(y))
         if name != healthy_name:
-            denom = np.std(ref) * np.std(y)
-            corr = np.nan if denom == 0 else float(
-                np.mean((ref - np.mean(ref)) * (y - np.mean(y))) / denom
-            )
-            row[f"{name}_corr_vs_healthy"] = corr
+            if similarity_cache is not None and name in similarity_cache:
+                row[f"{name}_psd_similarity_vs_healthy"] = float(
+                    similarity_cache[name]["psd_similarity_vs_healthy"][channel]
+                )
+                row[f"{name}_local_waveform_similarity_vs_healthy"] = float(
+                    similarity_cache[name]["local_waveform_similarity_vs_healthy"][channel]
+                )
+            else:
+                row[f"{name}_psd_similarity_vs_healthy"] = psd_cosine_similarity(
+                    ref, y, t_ms, window_ms=psd_window_ms
+                )
+                row[f"{name}_local_waveform_similarity_vs_healthy"] = windowed_abs_correlation_similarity(
+                    ref, y, t_ms, window_ms=local_corr_window_ms
+                )
     return row
 def get_channel_traces(
     cases: Dict[str, Dict[str, object]],
@@ -689,8 +945,8 @@ def plot_one_electrode(
         axins.set_xlim(zoom_start, zoom_end)
         axins.set_ylim(*zoom_ylim)
         axins.grid(True, alpha=0.20)
-        axins.set_title(f"Zoom ({zoom_start:.0f}–{zoom_end:.0f} ms)", fontsize=10)
-        axins.tick_params(labelsize=9)
+        axins.set_title(f"Zoom ({zoom_start:.0f}–{zoom_end:.0f} ms)", fontsize=PLOT_FONT_SIZE)
+        axins.tick_params(labelsize=PLOT_FONT_SIZE)
         try:
             ax.indicate_inset_zoom(axins, edgecolor="black", alpha=0.8)
         except Exception:
@@ -730,8 +986,11 @@ def save_png_pdf(fig, out_base: Path, dpi: int = 300) -> None:
     fig.savefig(out_base.with_suffix(".pdf"), dpi=dpi, bbox_inches="tight")
 def metric_array(df: pd.DataFrame, case: str, metric: str) -> np.ndarray:
     return df[f"{case}_{metric}"].to_numpy(dtype=float)
-def corr_array(df: pd.DataFrame, case: str) -> np.ndarray:
-    return df[f"{case}_corr_vs_healthy"].to_numpy(dtype=float)
+def psd_similarity_array(df: pd.DataFrame, case: str) -> np.ndarray:
+    return df[f"{case}_psd_similarity_vs_healthy"].to_numpy(dtype=float)
+
+def local_waveform_similarity_array(df: pd.DataFrame, case: str) -> np.ndarray:
+    return df[f"{case}_local_waveform_similarity_vs_healthy"].to_numpy(dtype=float)
 def set_heatmap_axis_style(ax) -> None:
     ax.set_xlabel("Electrode x index")
     ax.set_ylabel("Electrode y index")
@@ -776,18 +1035,18 @@ def create_figure1(
         panel_label(ax, chr(ord("E") + i))
     cbar2 = fig.colorbar(im_diff, ax=axes[1, 0:3], shrink=0.88, pad=0.015, aspect=28)
     cbar2.set_label("ΔRMS [mV]")
-    ax_corr = axes[1, 3]
-    im_corr = ax_corr.imshow(
-        to_grid(corr_array(df, "death_50"), n_points_xy, n_points_z),
-        aspect="auto", origin="upper", vmin=-1, vmax=1, cmap="coolwarm"
+    ax_sim = axes[1, 3]
+    im_sim = ax_sim.imshow(
+        to_grid(psd_similarity_array(df, "death_50"), n_points_xy, n_points_z),
+        aspect="auto", origin="upper", vmin=0.0, vmax=1.0
     )
-    ax_corr.set_title("Correlation: 50% vs Healthy", pad=8)
-    set_heatmap_axis_style(ax_corr)
-    panel_label(ax_corr, "H")
-    cbar3 = fig.colorbar(im_corr, ax=ax_corr, shrink=0.88, pad=0.015, aspect=28)
-    cbar3.set_label("Correlation")
+    ax_sim.set_title("PSD similarity: 50% vs Healthy", pad=8)
+    set_heatmap_axis_style(ax_sim)
+    panel_label(ax_sim, "H")
+    cbar3 = fig.colorbar(im_sim, ax=ax_sim, shrink=0.88, pad=0.015, aspect=28)
+    cbar3.set_label("PSD cosine similarity")
     fig.suptitle(f"g-{group_number}, Protocol {protocol}: spatial EMG metrics")
-    save_png_pdf(fig, out_dir / "figure1_spatial_rms_and_correlation")
+    save_png_pdf(fig, out_dir / "figure1_spatial_rms_and_psd_similarity")
     plt.close(fig)
 def create_figure2(df: pd.DataFrame, out_dir: Path, group_number: int, protocol: str) -> None:
     fig, axes = plt.subplots(2, 3, figsize=(17.0, 10.0), constrained_layout=True)
@@ -847,13 +1106,23 @@ def create_figure2(df: pd.DataFrame, out_dir: Path, group_number: int, protocol:
     fig.suptitle(f"g-{group_number}, Protocol {protocol}: electrode metric summaries")
     save_png_pdf(fig, out_dir / "figure2_metric_summaries")
     plt.close(fig)
-    fig2, ax = plt.subplots(figsize=(8.5, 5.0), constrained_layout=True)
-    data = [corr_array(df, case) for case in DISEASE_CASES]
-    ax.boxplot(data, tick_labels=[CASE_DISPLAY[c] for c in DISEASE_CASES], showfliers=False)
-    ax.set_ylabel("Correlation")
-    ax.set_title(f"g-{group_number}, Protocol {protocol}: correlation vs Healthy")
-    ax.grid(True, axis="y", alpha=0.25)
-    save_png_pdf(fig2, out_dir / "supplementary_correlation_boxplot")
+    fig2, axes2 = plt.subplots(1, 2, figsize=(15.5, 5.2), constrained_layout=True)
+    psd_data = [psd_similarity_array(df, case) for case in DISEASE_CASES]
+    axes2[0].boxplot(psd_data, tick_labels=[CASE_DISPLAY[c] for c in DISEASE_CASES], showfliers=False)
+    axes2[0].set_ylim(0.0, 1.02)
+    axes2[0].set_ylabel("PSD cosine similarity")
+    axes2[0].set_title("Phase-insensitive spectral similarity vs Healthy")
+    axes2[0].grid(True, axis="y", alpha=0.25)
+    panel_label(axes2[0], "A")
+    local_data = [local_waveform_similarity_array(df, case) for case in DISEASE_CASES]
+    axes2[1].boxplot(local_data, tick_labels=[CASE_DISPLAY[c] for c in DISEASE_CASES], showfliers=False)
+    axes2[1].set_ylim(0.0, 1.02)
+    axes2[1].set_ylabel("Mean windowed |r|")
+    axes2[1].set_title("Local waveform similarity vs Healthy")
+    axes2[1].grid(True, axis="y", alpha=0.25)
+    panel_label(axes2[1], "B")
+    fig2.suptitle(f"g-{group_number}, Protocol {protocol}: timing-robust similarity metrics")
+    save_png_pdf(fig2, out_dir / "supplementary_similarity_boxplots")
     plt.close(fig2)
 def create_figure3(
     df: pd.DataFrame,
@@ -920,17 +1189,22 @@ def create_publication_summary_table(df: pd.DataFrame) -> pd.DataFrame:
             row[f"{case}_min"] = float(np.min(vals))
             row[f"{case}_max"] = float(np.max(vals))
         rows.append(row)
-    row_corr: Dict[str, object] = {"metric": "corr_vs_healthy"}
-    for suffix in ("mean", "std", "median", "min", "max"):
-        row_corr[f"healthy_{suffix}"] = np.nan
-    for case in DISEASE_CASES:
-        vals = corr_array(df, case)
-        row_corr[f"{case}_mean"] = float(np.nanmean(vals))
-        row_corr[f"{case}_std"] = float(np.nanstd(vals))
-        row_corr[f"{case}_median"] = float(np.nanmedian(vals))
-        row_corr[f"{case}_min"] = float(np.nanmin(vals))
-        row_corr[f"{case}_max"] = float(np.nanmax(vals))
-    rows.append(row_corr)
+    for similarity_metric, getter in [
+        ("psd_similarity_vs_healthy", psd_similarity_array),
+        ("local_waveform_similarity_vs_healthy", local_waveform_similarity_array),
+    ]:
+        row_sim: Dict[str, object] = {"metric": similarity_metric}
+        for suffix in ("mean", "std", "median", "min", "max"):
+            row_sim[f"healthy_{suffix}"] = np.nan
+        for case in DISEASE_CASES:
+            vals = getter(df, case)
+            finite = vals[np.isfinite(vals)]
+            row_sim[f"{case}_mean"] = float(np.mean(finite)) if len(finite) else np.nan
+            row_sim[f"{case}_std"] = float(np.std(finite)) if len(finite) else np.nan
+            row_sim[f"{case}_median"] = float(np.median(finite)) if len(finite) else np.nan
+            row_sim[f"{case}_min"] = float(np.min(finite)) if len(finite) else np.nan
+            row_sim[f"{case}_max"] = float(np.max(finite)) if len(finite) else np.nan
+        rows.append(row_sim)
     return pd.DataFrame(rows)
 def create_publication_figures(
     metrics_df: pd.DataFrame,
@@ -989,6 +1263,8 @@ def process_group_protocol(
     zoom_inset_bottom: float = 0.57,
     zoom_inset_width: float = 0.33,
     zoom_inset_height: float = 0.38,
+    psd_window_ms: float = 1000.0,
+    local_corr_window_ms: float = 250.0,
 ) -> Tuple[pd.DataFrame, List[Dict[str, object]], int, int, np.ndarray]:
     print(f"\n=== g-{group_number}, Protocol {protocol} ===")
     cases: Dict[str, Dict[str, object]] = {}
@@ -1002,6 +1278,16 @@ def process_group_protocol(
     # Publication figures require all four stages. Metrics can still be produced
     # with a partial set when --allow-incomplete is used.
     t, n_points, n_points_xy, n_points_z = ensure_same_layout(cases)
+    print(
+        f"  Computing timing-robust similarity metrics: PSD window={psd_window_ms:g} ms, "
+        f"local correlation window={local_corr_window_ms:g} ms"
+    )
+    similarity_cache = precompute_similarity_cache(
+        cases,
+        subtract_mean=subtract_mean,
+        psd_window_ms=psd_window_ms,
+        local_corr_window_ms=local_corr_window_ms,
+    )
     plot_channels = resolve_channels_to_plot(
         electrode_positions, n_points_xy, n_points_z, n_points, max_electrodes=max_electrodes
     )
@@ -1055,7 +1341,11 @@ def process_group_protocol(
                 fig.tight_layout()
                 pdf_pages.savefig(fig)
                 plt.close(fig)
-        metrics_rows.append(compute_metrics(cases, ch, subtract_mean=subtract_mean))
+        metrics_rows.append(compute_metrics(
+            cases, ch, subtract_mean=subtract_mean,
+            psd_window_ms=psd_window_ms, local_corr_window_ms=local_corr_window_ms,
+            similarity_cache=similarity_cache,
+        ))
         processed_count = i_ch + 1
         if processed_count % 50 == 0 or processed_count == len(plot_channels):
             action = "processed" if skip_electrode_plots else "plotted/processed"
@@ -1132,17 +1422,21 @@ def wide_to_long(metrics_df: pd.DataFrame, group_number: int, protocol: str) -> 
                 "peak_to_peak": float(row[f"{stage}_peak_to_peak"]),
                 "max_abs": float(row[f"{stage}_max_abs"]),
                 "mean": float(row[f"{stage}_mean"]),
-                "corr_vs_healthy": np.nan,
+                "psd_similarity_vs_healthy": np.nan,
+                "local_waveform_similarity_vs_healthy": np.nan,
             }
-            corr_col = f"{stage}_corr_vs_healthy"
-            if corr_col in metrics_df.columns:
-                rec["corr_vs_healthy"] = float(row[corr_col])
+            psd_col = f"{stage}_psd_similarity_vs_healthy"
+            if psd_col in metrics_df.columns:
+                rec["psd_similarity_vs_healthy"] = float(row[psd_col])
+            local_col = f"{stage}_local_waveform_similarity_vs_healthy"
+            if local_col in metrics_df.columns:
+                rec["local_waveform_similarity_vs_healthy"] = float(row[local_col])
             rows.append(rec)
     return pd.DataFrame(rows)
 def create_group_level_summary(long_df: pd.DataFrame) -> pd.DataFrame:
     """Summarize spatial electrode distributions within each independent group."""
     records: List[Dict[str, object]] = []
-    metrics = ["rms", "peak_to_peak", "max_abs", "mean", "corr_vs_healthy"]
+    metrics = ["rms", "peak_to_peak", "max_abs", "mean", "psd_similarity_vs_healthy", "local_waveform_similarity_vs_healthy"]
     for (group, protocol, stage), sub in long_df.groupby(
         ["group_number", "protocol", "stage"], sort=True
     ):
@@ -1171,7 +1465,7 @@ def create_paired_protocol_summary(group_summary: pd.DataFrame) -> pd.DataFrame:
     if group_summary.empty:
         return pd.DataFrame()
     base = group_summary[
-        group_summary["metric"].isin(["rms", "peak_to_peak", "max_abs", "mean", "corr_vs_healthy"])
+        group_summary["metric"].isin(["rms", "peak_to_peak", "max_abs", "mean", "psd_similarity_vs_healthy", "local_waveform_similarity_vs_healthy"])
     ].copy()
     pivot = base.pivot_table(
         index=["group_number", "group_tag", "stage", "kill_fraction", "metric"],
@@ -1418,7 +1712,7 @@ def create_single_protocol_group_trajectories(
         ax.set_title(METRIC_DISPLAY_MANUSCRIPT.get(metric, metric))
         ax.grid(True, alpha=0.22)
         panel_label(ax, chr(ord("A") + panel))
-    axes[0].legend(loc="best", fontsize=10)
+    axes[0].legend(loc="best", fontsize=PLOT_FONT_SIZE)
     fig.suptitle(
         f"Protocol {protocol}: group-level EMG response to progressive motor-unit loss\n"
         "Individual stochastic realizations and across-group mean ± SD"
@@ -1489,7 +1783,7 @@ def create_single_protocol_normalized_trajectories(
         ax.set_title(METRIC_DISPLAY_MANUSCRIPT.get(metric, metric))
         ax.grid(True, alpha=0.22)
         panel_label(ax, chr(ord("A") + panel))
-    axes[0].legend(loc="best", fontsize=10)
+    axes[0].legend(loc="best", fontsize=PLOT_FONT_SIZE)
     fig.suptitle(
         f"Protocol {protocol}: within-group EMG change relative to the paired Healthy case"
     )
@@ -1661,24 +1955,80 @@ def _paired_group_electrode_ratio(
     )
 
 
-def _group_mean_correlation_by_electrode(
+def _group_mean_similarity_by_electrode(
     long_df: pd.DataFrame,
     protocol: str,
     stage: str,
+    metric: str = "psd_similarity_vs_healthy",
 ) -> np.ndarray:
-    """Mean correlation across groups at each electrode for one disease stage."""
+    """Mean electrode-level similarity across groups for one disease stage."""
     sub = long_df[
         (long_df["protocol"] == str(protocol).upper())
         & (long_df["stage"] == stage)
-    ][["electrode", "corr_vs_healthy"]].copy()
-    sub = sub[np.isfinite(sub["corr_vs_healthy"].to_numpy(dtype=float))]
+    ][["electrode", metric]].copy()
+    sub = sub[np.isfinite(sub[metric].to_numpy(dtype=float))]
     if sub.empty:
         return np.asarray([], dtype=float)
     return (
-        sub.groupby("electrode", sort=True)["corr_vs_healthy"]
+        sub.groupby("electrode", sort=True)[metric]
         .mean()
         .to_numpy(dtype=float)
     )
+
+def create_spatial_similarity_summary(long_df: pd.DataFrame) -> pd.DataFrame:
+    """One spatial-map similarity value per independent group/protocol/stage.
+
+    Cosine similarity of the RMS map is deliberately insensitive to a uniform
+    amplitude scaling and therefore complements the amplitude metrics. Healthy
+    self-similarity is reported as 1.0 for completeness.
+    """
+    rows: List[Dict[str, object]] = []
+    for (group, protocol), sub in long_df.groupby(["group_number", "protocol"], sort=True):
+        h = sub[sub["stage"] == "healthy"].sort_values("electrode")
+        if h.empty:
+            continue
+        h_e = h["electrode"].to_numpy(dtype=int)
+        h_rms = h["rms"].to_numpy(dtype=float)
+        h_p2p = h["peak_to_peak"].to_numpy(dtype=float)
+        for stage in STAGE_NAMES:
+            d = sub[sub["stage"] == stage].sort_values("electrode")
+            if d.empty or len(d) != len(h) or not np.array_equal(d["electrode"].to_numpy(dtype=int), h_e):
+                continue
+            rows.append({
+                "group_number": int(group),
+                "group_tag": f"g-{int(group)}",
+                "protocol": str(protocol),
+                "stage": stage,
+                "kill_fraction": KILL_FRACTION[stage],
+                "rms_map_cosine_vs_healthy": _cosine_similarity_nonnegative(
+                    h_rms, d["rms"].to_numpy(dtype=float)
+                ),
+                "peak_to_peak_map_cosine_vs_healthy": _cosine_similarity_nonnegative(
+                    h_p2p, d["peak_to_peak"].to_numpy(dtype=float)
+                ),
+            })
+    return pd.DataFrame(rows)
+
+def create_spatial_similarity_across_group_summary(spatial_df: pd.DataFrame) -> pd.DataFrame:
+    if spatial_df.empty:
+        return pd.DataFrame()
+    rows: List[Dict[str, object]] = []
+    for (protocol, stage), sub in spatial_df.groupby(["protocol", "stage"], sort=True):
+        vals = sub["rms_map_cosine_vs_healthy"].to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if not len(vals):
+            continue
+        rows.append({
+            "protocol": protocol,
+            "stage": stage,
+            "kill_fraction": KILL_FRACTION[stage],
+            "n_groups": int(len(vals)),
+            "mean_rms_map_cosine_vs_healthy": float(np.mean(vals)),
+            "sd_rms_map_cosine_vs_healthy": float(np.std(vals, ddof=1)) if len(vals) > 1 else np.nan,
+            "min_rms_map_cosine_vs_healthy": float(np.min(vals)),
+            "max_rms_map_cosine_vs_healthy": float(np.max(vals)),
+        })
+    return pd.DataFrame(rows)
 
 
 def create_single_protocol_group_level_figure10(
@@ -1692,8 +2042,8 @@ def create_single_protocol_group_level_figure10(
 
     A-D: across-group mean RMS maps.
     E-G: across-group mean of paired stage-minus-Healthy RMS maps.
-    H: Fig. 13-style correlation-with-Healthy boxplot, using the
-       across-group mean correlation at each electrode.
+    H: spatial RMS-map cosine similarity with Healthy. Each point is one
+       independent stochastic group; diamonds/error bars show mean +/- SD.
     """
     protocol = str(protocol).upper()
     expected = int(n_points_xy) * int(n_points_z)
@@ -1765,36 +2115,50 @@ def create_single_protocol_group_level_figure10(
     cbar2 = fig.colorbar(im_diff, ax=axes[1, 0:3], shrink=0.88, pad=0.015, aspect=28)
     cbar2.set_label("Delta RMS [mV]")
 
-    # User-requested replacement: use the Fig. 13 correlation boxplot in H.
-    ax_corr = axes[1, 3]
-    corr_data = [
-        _group_mean_correlation_by_electrode(long_df, protocol, stage)
-        for stage in DISEASE_CASES
-    ]
-    if all(len(v) > 0 for v in corr_data):
-        ax_corr.boxplot(
-            corr_data,
-            tick_labels=["25%", "50%", "75%"],
-            showfliers=False,
+    # Main similarity endpoint: spatial RMS-map cosine similarity. This is
+    # insensitive to exact 30-s spike timing and uses group as the replicate.
+    ax_sim = axes[1, 3]
+    spatial = create_spatial_similarity_summary(
+        long_df[long_df["protocol"] == protocol]
+    )
+    disease_spatial = spatial[spatial["stage"].isin(DISEASE_CASES)].copy()
+    xpos = np.arange(len(DISEASE_CASES))
+    if not disease_spatial.empty:
+        means, stds = [], []
+        for i, stage in enumerate(DISEASE_CASES):
+            vals = disease_spatial.loc[
+                disease_spatial["stage"] == stage, "rms_map_cosine_vs_healthy"
+            ].to_numpy(dtype=float)
+            vals = vals[np.isfinite(vals)]
+            means.append(float(np.mean(vals)) if len(vals) else np.nan)
+            stds.append(float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0)
+            if len(vals):
+                jitter = np.linspace(-0.06, 0.06, len(vals)) if len(vals) > 1 else np.array([0.0])
+                ax_sim.scatter(np.full(len(vals), xpos[i]) + jitter, vals, s=42, zorder=4)
+        ax_sim.errorbar(
+            xpos, means, yerr=stds, marker="D", markersize=7, linewidth=2.2,
+            capsize=4, zorder=5, label="Mean +/- SD",
         )
-        ax_corr.set_ylim(-1.0, 1.02)
-        ax_corr.set_xlabel("Motor-unit loss condition")
-        ax_corr.set_ylabel("Correlation")
-        ax_corr.set_title("Correlation with Healthy", pad=8)
-        ax_corr.grid(True, axis="y", alpha=0.25)
+        ax_sim.set_ylim(0.0, 1.02)
+        ax_sim.set_xticks(xpos, ["25%", "50%", "75%"] )
+        ax_sim.set_xlabel("Motor-unit loss condition")
+        ax_sim.set_ylabel("RMS-map cosine similarity")
+        ax_sim.set_title("Spatial similarity with Healthy", pad=8)
+        ax_sim.grid(True, axis="y", alpha=0.25)
+        ax_sim.legend(loc="best")
     else:
-        ax_corr.text(
-            0.5, 0.5, "Correlation data unavailable",
-            ha="center", va="center", transform=ax_corr.transAxes,
+        ax_sim.text(
+            0.5, 0.5, "Spatial similarity unavailable",
+            ha="center", va="center", transform=ax_sim.transAxes,
         )
-        ax_corr.set_axis_off()
-    panel_label(ax_corr, "H")
+        ax_sim.set_axis_off()
+    panel_label(ax_sim, "H")
 
     fig.suptitle(
-        f"Protocol {protocol}: group-level spatial RMS maps and waveform similarity\n"
-        "Maps show across-group means; differences are paired within group before averaging"
+        f"Protocol {protocol}: group-level spatial RMS maps and spatial similarity\n"
+        "Maps show across-group means; differences and similarity are paired within group"
     )
-    save_png_pdf(fig, out_dir / f"figure_{protocol}4_group_level_spatial_rms_and_correlation")
+    save_png_pdf(fig, out_dir / f"figure_{protocol}4_group_level_spatial_rms_and_similarity")
     plt.close(fig)
 
 
@@ -1847,7 +2211,7 @@ def create_single_protocol_group_level_figure11(
         ax.grid(True, alpha=0.25)
         panel_label(ax, chr(ord("A") + panel))
         if panel == 0:
-            ax.legend(loc="best", fontsize=10)
+            ax.legend(loc="best", fontsize=PLOT_FONT_SIZE)
 
     # D: RMS distribution over electrode positions of the group-mean field.
     ax = axes[1, 0]
@@ -2012,7 +2376,7 @@ def create_single_protocol_group_level_figure12(
     ax_line.set_xlabel("Electrode index")
     ax_line.set_ylabel("Peak-to-peak [mV]")
     ax_line.grid(True, alpha=0.25)
-    ax_line.legend(loc="best", fontsize=9)
+    ax_line.legend(loc="best", fontsize=PLOT_FONT_SIZE)
     panel_label(ax_line, "H")
 
     fig.suptitle(
@@ -2070,7 +2434,7 @@ def create_manuscript_group_trajectories(group_summary: pd.DataFrame, out_dir: P
         ax.grid(True, alpha=0.22)
         panel_label(ax, chr(ord("A") + panel))
         if panel == 0:
-            ax.legend(loc="best", fontsize=11)
+            ax.legend(loc="best", fontsize=PLOT_FONT_SIZE)
     fig.suptitle(
         "Group-level EMG response to progressive motor-unit loss\n"
         "Thin lines: individual stochastic realizations; thick lines: mean ± SD across groups"
@@ -2120,7 +2484,7 @@ def create_manuscript_normalized_trajectories(normalized_df: pd.DataFrame, out_d
         ax.grid(True, alpha=0.22)
         panel_label(ax, chr(ord("A") + panel))
         if panel == 0:
-            ax.legend(loc="best", fontsize=11)
+            ax.legend(loc="best", fontsize=PLOT_FONT_SIZE)
     fig.suptitle("Within-group EMG change relative to the paired Healthy realization")
     save_png_pdf(fig, out_dir / "figure_C2_protocol_A_vs_B_percent_change_vs_healthy")
     plt.close(fig)
@@ -2128,7 +2492,8 @@ METRIC_DISPLAY_MANUSCRIPT = {
     "rms": "RMS",
     "peak_to_peak": "Peak-to-peak amplitude",
     "max_abs": "Maximum absolute EMG",
-    "corr_vs_healthy": "Correlation vs Healthy",
+    "psd_similarity_vs_healthy": "PSD similarity vs Healthy",
+    "local_waveform_similarity_vs_healthy": "Local waveform similarity vs Healthy",
     "mean": "Mean EMG",
 }
 def _create_protocol_effect_figure(
@@ -2176,7 +2541,7 @@ def _create_protocol_effect_figure(
         ax.set_title(METRIC_DISPLAY_MANUSCRIPT[metric])
         ax.grid(True, alpha=0.22)
         panel_label(ax, chr(ord("A") + panel))
-    axes[0].legend(loc="best", fontsize=10)
+    axes[0].legend(loc="best", fontsize=PLOT_FONT_SIZE)
     fig.suptitle(title)
     save_png_pdf(fig, out_dir / filename)
     plt.close(fig)
@@ -2404,7 +2769,7 @@ def write_manuscript_figure_readme(out_dir: Path, n_groups: int, spatial_metric:
         "   01_protocol_A/figure_A2_percent_change_vs_healthy.png/pdf",
         "     Within-group change relative to each group's own Healthy baseline.",
         f"   01_protocol_A/figure_A3_group_mean_{spatial_metric}_maps.png/pdf",
-        "   01_protocol_A/figure_A4_group_level_spatial_rms_and_correlation.png/pdf",
+        "   01_protocol_A/figure_A4_group_level_spatial_rms_and_similarity.png/pdf",
         "   01_protocol_A/figure_A5_group_level_metric_summaries.png/pdf",
         "   01_protocol_A/figure_A6_group_level_peak_to_peak_maps.png/pdf",
         "     Across-group mean spatial phenotype for Protocol A.",
@@ -2413,7 +2778,7 @@ def write_manuscript_figure_readme(out_dir: Path, n_groups: int, spatial_metric:
         "   02_protocol_B/figure_B1_group_trajectories.png/pdf",
         "   02_protocol_B/figure_B2_percent_change_vs_healthy.png/pdf",
         f"   02_protocol_B/figure_B3_group_mean_{spatial_metric}_maps.png/pdf",
-        "   02_protocol_B/figure_B4_group_level_spatial_rms_and_correlation.png/pdf",
+        "   02_protocol_B/figure_B4_group_level_spatial_rms_and_similarity.png/pdf",
         "   02_protocol_B/figure_B5_group_level_metric_summaries.png/pdf",
         "   02_protocol_B/figure_B6_group_level_peak_to_peak_maps.png/pdf",
         "",
@@ -2597,6 +2962,24 @@ def parse_args() -> argparse.Namespace:
         help="Height of the zoom inset in axes coordinates [0,1]. Default: 0.38.",
     )
     parser.add_argument(
+        "--psd-window-ms",
+        type=float,
+        default=1000.0,
+        help=(
+            "Welch segment length [ms] for phase-insensitive PSD cosine similarity. "
+            "Default: 1000 ms."
+        ),
+    )
+    parser.add_argument(
+        "--local-corr-window-ms",
+        type=float,
+        default=250.0,
+        help=(
+            "Window length [ms] for the secondary local mean-|r| waveform similarity. "
+            "Default: 250 ms."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Only discover and validate cases; do not read EMG data or create outputs.",
@@ -2686,6 +3069,8 @@ def main() -> None:
                 zoom_inset_bottom=args.zoom_inset_bottom,
                 zoom_inset_width=args.zoom_inset_width,
                 zoom_inset_height=args.zoom_inset_height,
+                psd_window_ms=args.psd_window_ms,
+                local_corr_window_ms=args.local_corr_window_ms,
             )
             wide_frames.append(add_metadata_to_wide(metrics_df, g, p))
             long_frames.append(wide_to_long(metrics_df, g, p))
@@ -2728,6 +3113,16 @@ def main() -> None:
     paired_across_group_summary = create_paired_across_group_summary(paired_summary)
     paired_across_group_summary.to_csv(
         out_root / "paired_protocol_across_group_summary.csv", index=False
+    )
+    spatial_similarity_summary = create_spatial_similarity_summary(long_df)
+    spatial_similarity_summary.to_csv(
+        out_root / "spatial_similarity_summary.csv", index=False
+    )
+    spatial_similarity_across_group = create_spatial_similarity_across_group_summary(
+        spatial_similarity_summary
+    )
+    spatial_similarity_across_group.to_csv(
+        out_root / "spatial_similarity_across_group_summary.csv", index=False
     )
     manuscript_dir = out_root / "manuscript_figures"
     if not args.skip_manuscript_figures:
@@ -2772,7 +3167,7 @@ def main() -> None:
                         n_points_z,
                     )
                     # Three additional group-level figures requested for the manuscript:
-                    # modified Fig.10 (with Fig.13 correlation boxplot in panel H), Fig.11, Fig.12.
+                    # modified Fig.10 (with timing-robust spatial similarity in panel H), Fig.11, Fig.12.
                     create_single_protocol_group_level_figure10(
                         long_df,
                         protocol_dirs[protocol],
@@ -2832,6 +3227,8 @@ def main() -> None:
     print(f"  {out_root / 'across_group_summary.csv'}")
     print(f"  {out_root / 'normalized_to_healthy_group_summary.csv'}")
     print(f"  {out_root / 'paired_protocol_across_group_summary.csv'}")
+    print(f"  {out_root / 'spatial_similarity_summary.csv'}")
+    print(f"  {out_root / 'spatial_similarity_across_group_summary.csv'}")
     if not args.skip_manuscript_figures:
         print(f"  {manuscript_dir}")
     print("\nFor inferential statistics, use group_number as the replicate/block.")
