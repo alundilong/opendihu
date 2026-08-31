@@ -1856,7 +1856,7 @@ def build_arg_parser():
     parser.add_argument("--slurm-time", default="48:00:00")
 
     # OpenDiHu output controls from the supplied Slurm example.
-    parser.add_argument("--output-timestep", type=float, default=10.0)
+    parser.add_argument("--output-timestep", type=float, default=1.0)
     parser.add_argument("--output-timestep-fibers", type=float, default=1000.0)
     parser.add_argument("--output-timestep-3d-emg", type=float, default=1000.0)
     parser.add_argument("--output-timestep-3d-electrodes", type=float, default=10000000.0)
