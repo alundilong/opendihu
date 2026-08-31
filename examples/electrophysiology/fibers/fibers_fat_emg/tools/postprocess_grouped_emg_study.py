@@ -2376,7 +2376,16 @@ def create_single_protocol_group_level_figure12(
     ax_line.set_xlabel("Electrode index")
     ax_line.set_ylabel("Peak-to-peak [mV]")
     ax_line.grid(True, alpha=0.25)
-    ax_line.legend(loc="best", fontsize=PLOT_FONT_SIZE)
+    ax_line.legend(
+        loc="center left",
+        bbox_to_anchor=(1.03, 0.5),
+        fontsize=9,
+        frameon=False,
+        borderaxespad=0.0,
+        handlelength=1.8,
+        handletextpad=0.5,
+        labelspacing=0.5,
+    )
     panel_label(ax_line, "H")
 
     fig.suptitle(
