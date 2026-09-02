@@ -2185,8 +2185,22 @@ def create_single_protocol_group_level_figure11(
         ("max_abs", "Electrode-wise max |EMG|", "Max |EMG| [mV]"),
     ]
 
-    fig, axes = plt.subplots(2, 3, figsize=(17.2, 10.0), constrained_layout=True)
-    fig.set_constrained_layout_pads(w_pad=0.08, h_pad=0.10, wspace=0.08, hspace=0.10)
+    # Use a dedicated top row for the shared legend so it never overlays panels A-C.
+    fig = plt.figure(figsize=(17.2, 10.4), constrained_layout=True)
+    gs = fig.add_gridspec(
+        nrows=3,
+        ncols=3,
+        height_ratios=[0.10, 1.0, 1.0],
+    )
+    fig.set_constrained_layout_pads(w_pad=0.08, h_pad=0.08, wspace=0.08, hspace=0.08)
+
+    legend_ax = fig.add_subplot(gs[0, :])
+    legend_ax.axis("off")
+
+    axes = np.empty((2, 3), dtype=object)
+    for j in range(3):
+        axes[0, j] = fig.add_subplot(gs[1, j])
+        axes[1, j] = fig.add_subplot(gs[2, j])
 
     stage_cycle = plt.rcParams["axes.prop_cycle"].by_key().get(
         "color", [f"C{i}" for i in range(10)]
@@ -2199,19 +2213,36 @@ def create_single_protocol_group_level_figure11(
             agg = _group_mean_electrode_metric(long_df, protocol, stage, metric)
             if agg.empty:
                 continue
+
             x = agg["electrode"].to_numpy(dtype=int)
             mean = agg["mean"].to_numpy(dtype=float)
             sd = agg["std"].fillna(0.0).to_numpy(dtype=float)
             color = stage_cycle[i % len(stage_cycle)]
+
             ax.plot(x, mean, linewidth=1.25, color=color, label=CASE_DISPLAY[stage])
-            ax.fill_between(x, mean - sd, mean + sd, color=color, alpha=0.12, linewidth=0)
+            ax.fill_between(
+                x, mean - sd, mean + sd, color=color, alpha=0.12, linewidth=0
+            )
+
         ax.set_title(title)
         ax.set_xlabel("Electrode index")
         ax.set_ylabel(ylabel)
         ax.grid(True, alpha=0.25)
         panel_label(ax, chr(ord("A") + panel))
-        if panel == 0:
-            ax.legend(loc="best", fontsize=PLOT_FONT_SIZE)
+
+    # Shared legend for panels A-C placed in its own dedicated row.
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        legend_ax.legend(
+            handles,
+            labels,
+            loc="center",
+            ncol=len(labels),
+            fontsize=PLOT_FONT_SIZE,
+            frameon=False,
+            handlelength=2.0,
+            columnspacing=2.0,
+        )
 
     # D: RMS distribution over electrode positions of the group-mean field.
     ax = axes[1, 0]
@@ -2219,20 +2250,28 @@ def create_single_protocol_group_level_figure11(
     for stage in STAGE_NAMES:
         agg = _group_mean_electrode_metric(long_df, protocol, stage, "rms")
         rms_box.append(agg["mean"].to_numpy(dtype=float))
-    ax.boxplot(rms_box, tick_labels=[CASE_DISPLAY[s] for s in STAGE_NAMES], showfliers=False)
+    ax.boxplot(
+        rms_box,
+        tick_labels=[CASE_DISPLAY[s] for s in STAGE_NAMES],
+        showfliers=False,
+    )
     ax.set_title("RMS distribution across electrodes")
     ax.set_ylabel("RMS [mV]")
     ax.tick_params(axis="x", rotation=20)
     ax.grid(True, axis="y", alpha=0.25)
     panel_label(ax, "D")
 
-    # E: Peak-to-peak distribution over electrode positions of group-mean field.
+    # E: Peak-to-peak distribution over electrode positions of the group-mean field.
     ax = axes[1, 1]
     p2p_box = []
     for stage in STAGE_NAMES:
         agg = _group_mean_electrode_metric(long_df, protocol, stage, "peak_to_peak")
         p2p_box.append(agg["mean"].to_numpy(dtype=float))
-    ax.boxplot(p2p_box, tick_labels=[CASE_DISPLAY[s] for s in STAGE_NAMES], showfliers=False)
+    ax.boxplot(
+        p2p_box,
+        tick_labels=[CASE_DISPLAY[s] for s in STAGE_NAMES],
+        showfliers=False,
+    )
     ax.set_title("Peak-to-peak distribution")
     ax.set_ylabel("Peak-to-peak [mV]")
     ax.tick_params(axis="x", rotation=20)
@@ -2253,26 +2292,31 @@ def create_single_protocol_group_level_figure11(
         group_points.append(stage_group)
         means.append(float(np.mean(stage_group)) if len(stage_group) else np.nan)
         stds.append(float(np.std(stage_group, ddof=1)) if len(stage_group) > 1 else 0.0)
+
     xpos = np.arange(len(STAGE_NAMES))
     ax.bar(xpos, means, yerr=stds, capsize=4, alpha=0.82)
+
     # Show the independent group values explicitly on top of the summary.
     for i, vals in enumerate(group_points):
         if len(vals):
             jitter = np.linspace(-0.08, 0.08, len(vals)) if len(vals) > 1 else np.array([0.0])
             ax.scatter(np.full(len(vals), xpos[i]) + jitter, vals, s=28, zorder=5)
+
     ax.set_xticks(xpos, [CASE_DISPLAY[s] for s in STAGE_NAMES], rotation=20)
     ax.set_ylabel("RMS [mV]")
-    ax.set_title("Global RMS summary (mean +/- SD across groups)")
+    ax.set_title("Global RMS across groups")
     ax.grid(True, axis="y", alpha=0.25)
     panel_label(ax, "F")
 
     fig.suptitle(
         f"Protocol {protocol}: group-level electrode EMG summary statistics\n"
-        "Profiles and distributions use the across-group mean field; panel F uses group as the replicate"
+        "Profiles and distributions use the across-group mean field; "
+        "panel F uses group as the replicate",
+        fontsize=PLOT_FONT_SIZE + 2,
     )
+
     save_png_pdf(fig, out_dir / f"figure_{protocol}5_group_level_metric_summaries")
     plt.close(fig)
-
 
 def create_single_protocol_group_level_figure12(
     long_df: pd.DataFrame,
